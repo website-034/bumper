@@ -1,0 +1,21 @@
+{
+  "characters": [
+    { "id": "gk-corgi",      "label": "Lo-Fi Corgi", "file": "gobkit/animal/Corgi.glb",      "color": "#e8a35c" },
+    { "id": "gk-duck",       "label": "Lo-Fi Duck",  "file": "gobkit/animal/Duck.glb",       "color": "#f3d65a" },
+    { "id": "gk-hippo",      "label": "Hippo",       "file": "gobkit/animal/Hippo.glb",      "color": "#7a4426" },
+    { "id": "gk-rhino",      "label": "Rhino",       "file": "gobkit/animal/Rhino.glb",      "color": "#9aa3ad" },
+    { "id": "gk-platypus",   "label": "Platypus",    "file": "gobkit/animal/Platypus.glb",   "color": "#7a9e9a" },
+    { "id": "gk-red",        "label": "Red",         "file": "gobkit/animal/Red.glb",        "color": "#e2685a" },
+    { "id": "gk-bat",        "label": "Bat",         "file": "gobkit/animal/Bat.glb",        "color": "#8a6fa8" },
+    { "id": "gk-shark",      "label": "Shark",       "file": "gobkit/animal/Shark.glb",      "color": "#7fa6c9" },
+    { "id": "gk-anglerfish", "label": "Anglerfish",  "file": "gobkit/animal/Anglerfish.glb", "color": "#6b7fb0" },
+    { "id": "gk-jellyfish",  "label": "Jellyfish",   "file": "gobkit/animal/Jellyfish.glb",  "color": "#4f7f9e" }
+  ],
+  "defaults": {
+    "height": 2.3,
+    "fit": "max",
+    "fps": 24,
+    "segments": { "idle": [0, 29], "attack": [30, 59], "dead": [60, 89], "walk": [90, 119] },
+    "animations": { "idle": "idle", "walk": "walk", "run": "walk", "carry": "walk", "punch": "attack", "ko": "dead" }
+  }
+}
