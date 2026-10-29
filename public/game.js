@@ -668,6 +668,8 @@ const fenceMaxPosts = 200;
 const fencePosts = new THREE.InstancedMesh(fencePostGeo, new THREE.MeshStandardMaterial({ color: '#fff3e6', roughness: 0.7 }), fenceMaxPosts);
 const fenceRails = new THREE.InstancedMesh(fenceRailGeo, new THREE.MeshStandardMaterial({ color: '#ffb7c9', roughness: 0.6 }), fenceMaxPosts * 2);
 fencePosts.castShadow = fenceRails.castShadow = true;
+// The instances move every round and as the island shrinks, so a cached bounding sphere goes stale.
+fencePosts.frustumCulled = fenceRails.frustumCulled = false;
 island.add(fencePosts, fenceRails);
 let fenceKey = '';
 
