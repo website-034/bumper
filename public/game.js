@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { buildCritter } from './characters.js';
 import { MODEL_CHARACTERS, loadManifest, loadModel, isModelReady, buildModelCritter } from './models.js';
 import { FLUFFY, buildFluffy } from './crew.js';
+import { Ragdoll, poseRagdoll, ragdollHead } from './floppy.js';
 import { WEAPON_INFO, buildWeapon, buildPickup, buildShot, animateBomb } from './weapons.js';
 
 await loadManifest();
@@ -34,6 +35,43 @@ if (!CHARACTERS[myAnimal]) myAnimal = ANIMAL_KEYS[Math.floor(Math.random() * ANI
 // ---------- Renderer / scene ----------
 const isTouch = 'ontouchstart' in window;
 const lowPower = matchMedia('(pointer: coarse)').matches;
+
+// ---------- Quality tiers (visual only: gameplay is identical on every tier) ----------
+const QUALITY_PREFS = ['auto', 'high', 'medium', 'low'];
+let qualityPref = QUALITY_PREFS.includes(localStorage.getItem('bb-quality')) ? localStorage.getItem('bb-quality') : 'auto';
+let autoTier = lowPower ? 'low' : 'high';
+const tier = () => (qualityPref === 'auto' ? autoTier : qualityPref);
+let fpsAcc = 0, fpsFrames = 0, slowFor = 0;
+// Auto mode steps down a tier when the frame rate stays under 45 fps for 3 seconds of play.
+function watchFrameRate(rawDt, playing) {
+  if (qualityPref !== 'auto' || !playing || rawDt > 0.25 || document.hidden) return;
+  fpsAcc += rawDt;
+  fpsFrames++;
+  if (fpsAcc < 0.5) return;
+  slowFor = fpsFrames / fpsAcc < 45 ? slowFor + fpsAcc : 0;
+  fpsAcc = fpsFrames = 0;
+  if (slowFor >= 3 && autoTier !== 'low') {
+    autoTier = autoTier === 'high' ? 'medium' : 'low';
+    slowFor = 0;
+    renderQualityPicker();
+  }
+}
+function renderQualityPicker() {
+  for (const b of document.querySelectorAll('#qualityPicker button')) {
+    b.classList.toggle('on', b.dataset.q === qualityPref);
+    if (b.dataset.q === 'auto') b.textContent = `Auto (${autoTier[0].toUpperCase()}${autoTier.slice(1)})`;
+  }
+}
+for (const b of document.querySelectorAll('#qualityPicker button')) {
+  b.onclick = () => {
+    qualityPref = b.dataset.q;
+    localStorage.setItem('bb-quality', qualityPref);
+    slowFor = 0;
+    renderQualityPicker();
+  };
+}
+renderQualityPicker();
+
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, lowPower ? 1.5 : 2));
 renderer.shadowMap.enabled = true;
@@ -788,6 +826,7 @@ function updateHeldWeapon(c, dt, s) {
       c.sweatT = 0.3;
     }
   }
+  c.twistT = 0;
   if (!c.weaponMesh) { c.wLean = 0; return; }
 
   const info = WEAPON_INFO[type];
@@ -798,6 +837,7 @@ function updateHeldWeapon(c, dt, s) {
     if (phase === 'wind') c.sq += 0.25;
     if (phase === 'strike' || phase === 'spin') { c.sq -= 0.35; if (c.id === myId) shake = Math.max(shake, 0.15); }
     if (phase === 'spin') c.spinClock = 0;
+    if (c.wPhase === 'spin') c.spinDizzyT = 1.1; // staggers about after the mallet spin
     c.wPhase = phase;
   }
   const moving = Math.hypot(c.dvx, c.dvz) > 1;
@@ -823,6 +863,7 @@ function updateHeldWeapon(c, dt, s) {
     rx = Math.PI / 2; ry = from * (Math.PI / 2 + (phase === 'wind' ? 0.55 : 0.35)); rz = 0;
     roll = -side * Math.PI / 2;
     lean = phase === 'wind' ? -0.15 : 0.25; k = phase === 'wind' ? 9 : 26;
+    c.twistT = phase === 'wind' ? side * 0.45 : -side * 0.5;
   } else if (info.spin && (phase === 'wind' || phase === 'spin')) {
     // Hammer held straight out to the side; the whole critter spins with it.
     px = Math.abs(g.x) * 1.1; py = g.y + 0.35 + (phase === 'wind' ? Math.sin(time * 45) * 0.03 : 0); pz = 0.1;
@@ -1185,6 +1226,8 @@ function predictActions(punch, jump, kick) {
     c.liftV = PRED.jump * (melee ? 0.75 : 1);
     c.lift = 0.001;
     c.liftBase = c.y;
+    c.sq += 0.3;
+    c.localJump = performance.now();
   }
   if (punch && !s.w && !s.h && !recent(c.localPunch, PRED.punchCd)) {
     c.localPunch = performance.now();
@@ -1208,8 +1251,42 @@ function carriedByMe(c, s) {
   c.face = s.f;
   return true;
 }
+const _rv = new THREE.Vector3(), _rs = new THREE.Vector3(), _rt = new THREE.Vector3(), _hv = new THREE.Vector3();
+const easeOut = (u) => 1 - (1 - u) * (1 - u);
+const clampAbs = (v, m) => Math.max(-m, Math.min(m, v));
+const STUMBLE = 0.75, GET_UP = 0.75, PEEL = 0.4, THROW_FOLLOW = 0.45;
+
+// Ragdoll from the pose on screen, carrying the snapshot velocity; thrown critters tumble head over heels.
+function startRagdoll(c, s) {
+  const rd = c.ragdoll || (c.ragdoll = new Ragdoll(c));
+  _rv.set(s.vx || 0, s.vy || 0, s.vz || 0);
+  const h = Math.hypot(_rv.x, _rv.z);
+  if (c.thrownVis && h > 0.5) _rs.set(_rv.z / h, 0, -_rv.x / h).multiplyScalar(7 + Math.random() * 3);
+  else _rs.set((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 3);
+  rd.start(c, _rv, _rs);
+  c.rag = true;
+  c.ragW = 1;
+  c.ragAir = !s.g;
+  c.hop = c.hopV = 0;
+}
+
+// Low tier: only my critter and the three nearest get spring chains and ragdolls.
+let detailT = 0;
+function assignDetail(dt) {
+  detailT -= dt;
+  if (detailT > 0) return;
+  detailT = 0.25;
+  if (tier() !== 'low') { for (const c of critters.values()) c.full = true; return; }
+  const me = critters.get(myId);
+  const rx = me ? me.x : camPos.x, rz = me ? me.z : camPos.z;
+  const near = [...critters.values()].filter((c) => c !== me).sort((a, b) => Math.hypot(a.x - rx, a.z - rz) - Math.hypot(b.x - rx, b.z - rz));
+  for (const c of near) c.full = false;
+  near.slice(0, 3).forEach((c) => (c.full = true));
+  if (me) me.full = true;
+}
+
 function animateCritter(c, dt, s, opts = {}) {
-  const ox = c.x, oz = c.z;
+  const ox = c.x, oz = c.z, oy = c.y;
   if (s && opts.me && predictMe(c, s, dt)) {
     const age = Math.min(0.1, (performance.now() - snapTime) / 1000);
     const py = c.ty + c.tvy * age * (s.g ? 0 : 1);
@@ -1234,6 +1311,7 @@ function animateCritter(c, dt, s, opts = {}) {
   c.dvx += (vx - c.dvx) * Math.min(1, dt * 10);
   c.dvz += (vz - c.dvz) * Math.min(1, dt * 10);
   const speed = Math.hypot(c.dvx, c.dvz);
+  c.dvy = (c.dvy || 0) + ((c.y - oy) / Math.max(dt, 1e-3) - (c.dvy || 0)) * Math.min(1, dt * 12);
 
   // Jelly wobble: the top of the body lags behind acceleration, in body-local space.
   const ax = (c.dvx - pvx) / Math.max(dt, 1e-3), az = (c.dvz - pvz) / Math.max(dt, 1e-3);
@@ -1270,24 +1348,83 @@ function animateCritter(c, dt, s, opts = {}) {
   c.root.position.y -= c.wade * 0.4;
   if (wet && Math.random() < dt * 7) puff(c.x + (Math.random() - 0.5), 0.15, c.z + (Math.random() - 0.5), 1, '#cfeeff', 1.2);
 
-  // Walk cycle
+  // ---- Visual-only states (all read from the snapshot; none of this touches gameplay) ----
+  const now = performance.now();
+  const fl = c.floppy;
+  const full = c.full !== false;
+  const inPlay = room?.phase !== 'lobby' && snap?.phase !== 'lobby';
+  if (c.thrownVis && ((s && s.g && !s.sn && now - c.thrownAt > 300) || now - c.thrownAt > 4000 || held)) c.thrownVis = false;
+  c.peelT = Math.max(0, (c.peelT || 0) - dt);
+  const peeling = c.peelT > 0;
+  const hangRaw = s ? s.hg || 0 : 0;
+  if (hangRaw) c.lastHang = hangRaw;
+  const hang = hangRaw || (peeling ? c.lastHang || 0.5 : 0);
+  const swept = !!(s && s.rv && (s.sn || ko));
+  const wantRag = !!(fl && full && s && inPlay && s.st === 'alive' && !held && !hang && (ko || falling || c.thrownVis || swept));
+  if (wantRag && !c.rag) startRagdoll(c, s);
+  else if (!wantRag && c.rag) {
+    c.rag = false;
+    if (!falling && s?.st === 'alive') c.getUpT = GET_UP;
+  }
+  if (!c.rag) c.ragW = Math.max(0, (c.ragW || 0) - dt / 0.4);
+  if (!c.ragdoll) c.ragW = 0;
+  const ragging = c.ragW > 0;
+  if (s && s.g && !s.rv) c.groundY = c.y;
+  if (c.rag) {
+    if (!s.g) c.ragAir = true;
+    else if (c.ragAir) {
+      // One bounce on landing, then a flop.
+      c.ragAir = false;
+      c.hopV = c.thrownVis ? 4.2 : 2.2;
+      fl.jiggle(1);
+      puff(c.x, c.y + 0.1, c.z, 6, '#f3e6d6', 2.2);
+    }
+  }
+  c.hopV = (c.hopV || 0) - 22 * dt;
+  c.hop = Math.max(0, (c.hop || 0) + c.hopV * dt);
+  if (c.hop === 0 && c.hopV < 0) c.hopV = 0;
+
+  c.getUpT = Math.max(0, (c.getUpT || 0) - dt);
+  const getting = c.getUpT > 0, gu = getting ? 1 - c.getUpT / GET_UP : 1;
+  c.stumbleT = Math.max(0, (c.stumbleT || 0) - dt);
+  const st = c.stumbleT / STUMBLE;
+  c.throwT = Math.max(0, (c.throwT || 0) - dt);
+  const th = c.throwT > 0 ? 1 - c.throwT / THROW_FOLLOW : -1;
+  c.smugT = Math.max(0, (c.smugT || 0) - dt);
+  c.spinDizzyT = Math.max(0, (c.spinDizzyT || 0) - dt);
+  const dizzyWant = Math.max(s && s.dz > 55 && !ko ? Math.min(1, 0.45 + (s.dz - 55) / 40) : 0, Math.min(1, c.spinDizzyT * 1.4));
+  c.dizzy = (c.dizzy || 0) + (dizzyWant - (c.dizzy || 0)) * Math.min(1, dt * 4);
+  const dz = c.dizzy;
+
+  // Landing: squash and a belly jiggle sized by how hard we came down.
+  const inAir = airborne && !hang;
+  if (inAir) c.minVy = Math.min(c.minVy || 0, c.dvy);
+  else if (c.wasAir) {
+    const imp = Math.min(1, Math.max(0, -(c.minVy || 0)) / 12);
+    if (imp > 0.15 && !ragging) { c.sqV -= 7 * imp; fl?.jiggle(imp); }
+    c.minVy = 0;
+  }
+  c.wasAir = inAir;
+
+  // Walk cycle (drunk and irregular when dizzy)
   const amt = grounded ? Math.min(1, speed / 4) : 0;
-  c.walk += dt * (2 + speed * 2.4) * (amt > 0.05 ? 1 : 0);
+  c.walk += dt * (2 + speed * 2.4) * (amt > 0.05 ? 1 : 0) * (1 + Math.sin(time * 3.3) * 0.45 * dz);
   const sw = Math.sin(c.walk);
 
-  // Lean & squash springs
-  spring(c, 'lean', 'leanV', Math.min(0.32, speed * 0.04), 120, 9, dt);
+  // Lean into acceleration and tip back when stopping hard; roll into turns. Damped springs overshoot a little.
+  spring(c, 'lean', 'leanV', grounded ? clampAbs(speed * 0.03 + laz * 0.012, 0.32) : speed * 0.02, 120, 9, dt);
   spring(c, 'sq', 'sqV', 0, 220, 8, dt);
   const heavy = c.weaponType && !WEAPON_INFO[c.weaponType]?.ranged ? 2.4 : 1;
-  spring(c, 'tilt', 'tiltV', sw * 0.1 * amt * heavy + (held ? Math.sin(time * 18) * 0.3 : 0), 160, 10, dt);
+  spring(c, 'tilt', 'tiltV', sw * 0.1 * amt * heavy - (grounded ? clampAbs(lax * 0.01, 0.2) : 0), 160, 10, dt);
 
   c.ko += ((ko ? 1 : 0) - c.ko) * Math.min(1, dt * 8);
-  if (falling) c.tumble += dt * 5; else c.tumble *= Math.exp(-dt * 10);
+  if (falling && !ragging) c.tumble += dt * 5; else c.tumble *= Math.exp(-dt * 10);
 
   const isModel = c.kind === 'model';
   const p = c.pivot;
-  const bounce = Math.abs(sw) * 0.08 * amt * (isModel && c.animated ? 0 : 1) + (opts.hop ? Math.abs(Math.sin(time * 7)) * 0.6 : 0);
-  p.position.y = bounce;
+  let bounce = Math.abs(sw) * 0.08 * amt * (isModel && c.animated ? 0 : 1) + (opts.hop ? Math.abs(Math.sin(time * 7)) * 0.6 : 0);
+  bounce -= dz * (0.1 + Math.sin(time * 5.3) * 0.04); // knees buckle
+  p.position.set(0, bounce, 0);
   const koTip = isModel && c.hasKoClip ? 0 : c.ko;
   const leanAmt = isModel && c.animated ? 0.4 : 1;
   p.rotation.set(c.lean * leanAmt * (1 - c.ko) - koTip * 1.45 + c.tumble, 0, c.tilt * leanAmt);
@@ -1303,11 +1440,51 @@ function animateCritter(c, dt, s, opts = {}) {
   c.kickA = Math.max(0, (c.kickA || 0) - dt * 3.2);
   const kickE = Math.sin(c.kickA * Math.PI);
   p.rotation.x -= kickE * 0.3;
-  // Hanging off the fence: pulled up toward the rail as the climb progresses.
-  const hang = s ? s.hg || 0 : 0;
+  // Hanging off the fence: pulled up toward the rail as the climb progresses, swaying.
   if (hang) {
     p.rotation.x = 0.25 + Math.sin(time * 10) * 0.05;
+    p.rotation.z += Math.sin(time * 2.3) * 0.12;
     p.position.y = Math.sin(hang * Math.PI * 7) * 0.05;
+  }
+  if (!isModel && fl) {
+    // Stagger with the knock, side to side for a couple of steps.
+    if (st > 0) {
+      const e = Math.sin(st * Math.PI);
+      p.rotation.x += (c.knockZ || 0) * 0.45 * e;
+      p.rotation.z -= (c.knockX || 0) * 0.45 * e;
+      p.rotation.z += Math.sin((1 - st) * Math.PI * 3) * 0.14 * st;
+    }
+    // Dizzy: drunk wobble, the head rolling round.
+    if (dz > 0.01) {
+      p.rotation.z += (Math.sin(time * 2.7) * 0.14 + Math.sin(time * 1.3) * 0.08) * dz;
+      p.rotation.x += Math.sin(time * 2.1) * 0.06 * dz;
+      c.root.rotation.y += Math.sin(time * 1.9) * 0.2 * dz;
+      fl.extra.x += Math.sin(time * 4.5) * 0.22 * dz;
+      fl.extra.z += Math.cos(time * 4.5) * 0.22 * dz;
+    }
+    // Heavy weapons: dragging pulls the shoulder down; pan sweeps twist the torso.
+    if (c.wPhase === 'drag' && c.weaponMesh) p.rotation.z -= c.weaponType === 'hammer' ? 0.14 : c.weaponType === 'bat' || c.weaponType === 'lollipop' ? 0.06 : 0;
+    spring(c, 'twist', 'twistV', c.twistT || 0, 140, 12, dt);
+    p.rotation.y += c.twist || 0;
+    // Getting up: push up off the ground, then shake it off.
+    if (getting) {
+      p.rotation.x += 0.5 * Math.max(0, 1 - gu * 2);
+      if (gu > 0.45) fl.extra.y += Math.sin(time * 30) * 0.5 * (1 - gu);
+    }
+    if (th >= 0) p.rotation.x += 0.35 * Math.sin(th * Math.PI);
+    // Carried: swing like a pendulum under the grip, around chest height.
+    if (held) {
+      c.pendVX = (c.pendVX || 0) + (-(c.pendX || 0) * 30 - c.pendVX * 2.2 + laz * 0.8) * dt;
+      c.pendVZ = (c.pendVZ || 0) + (-(c.pendZ || 0) * 30 - c.pendVZ * 2.2 - lax * 0.8) * dt;
+      c.pendX = clampAbs((c.pendX || 0) + c.pendVX * dt, 0.9);
+      c.pendZ = clampAbs((c.pendZ || 0) + c.pendVZ * dt, 0.9);
+      const G = 1.2;
+      p.rotation.x += c.pendX;
+      p.rotation.z += c.pendZ;
+      p.position.x += G * Math.sin(c.pendZ);
+      p.position.y += G * (1 - Math.cos(c.pendX)) + G * (1 - Math.cos(c.pendZ));
+      p.position.z -= G * Math.sin(c.pendX);
+    } else c.pendX = c.pendZ = c.pendVX = c.pendVZ = 0;
   }
 
   if (isModel) {
@@ -1324,35 +1501,93 @@ function animateCritter(c, dt, s, opts = {}) {
   // Feet: kick around when airborne, lift into the air when knocked flat
   const kick = airborne || held || falling ? Math.sin(time * (hang ? 12 : 18)) * 0.2 : 0;
   const koLift = c.ko * 0.5;
-  c.footL.position.set(-0.34, 0.13 + Math.max(0, sw) * 0.16 * amt + koLift + kick, 0.08 + sw * 0.28 * amt + koLift * 0.8);
-  c.footR.position.set(0.34, 0.13 + Math.max(0, -sw) * 0.16 * amt + koLift - kick + kickE * 0.55, 0.08 - sw * 0.28 * amt + koLift * 0.8 + kickE * 0.95);
+  const splay = dz * 0.12;
+  c.footL.position.set(-0.34 - splay, 0.13 + Math.max(0, sw) * 0.16 * amt + koLift + kick, 0.08 + sw * 0.28 * amt + koLift * 0.8);
+  c.footR.position.set(0.34 + splay, 0.13 + Math.max(0, -sw) * 0.16 * amt + koLift - kick + kickE * 0.55, 0.08 - sw * 0.28 * amt + koLift * 0.8 + kickE * 0.95);
   c.footR.scale.setScalar(1 + kickE * 0.3);
+  if (st > 0 && grounded) {
+    // Stagger steps in the direction of the knock.
+    const ph = (1 - st) * Math.PI * 3;
+    c.footL.position.y += Math.max(0, Math.sin(ph)) * 0.22 * st;
+    c.footR.position.y += Math.max(0, -Math.sin(ph)) * 0.22 * st;
+    c.footL.position.z += (c.knockZ || 0) * 0.25 * st * Math.sin(ph);
+    c.footR.position.z -= (c.knockZ || 0) * 0.25 * st * Math.sin(ph);
+  }
+  if (hang) {
+    // Scrambling against the fence.
+    [c.footL, c.footR].forEach((f, i) => f.position.set((i ? 1 : -1) * 0.28, 0.4 + Math.sin(time * 15 + i * Math.PI) * 0.25, 0.42 + Math.cos(time * 15 + i * Math.PI) * 0.12));
+  } else if (held || (c.ko > 0.5 && !ragging)) {
+    // Feet hang off the body (swinging with it), kicking hard while mashing to escape.
+    p.updateMatrix();
+    const mash = held && s.mh;
+    [c.footL, c.footR].forEach((f, i) => {
+      const k = held ? Math.sin(time * (mash ? 24 : 5) + i * Math.PI) * (mash ? 0.32 : 0.08) : 0;
+      _hv.set((i ? 1 : -1) * 0.25, 0.1 + Math.max(0, k), 0.08 + k).applyMatrix4(p.matrix);
+      if (!held) _hv.y += 0.35 + kick;
+      f.position.copy(_hv);
+    });
+  }
 
   // Arms
   if (s && s.pa && s.pa !== c.lastPa && !c.weaponType && !recent(c.localPunch, Math.max(0, rtt) + 250)) c.punch[s.pa - 1] = 1;
   c.lastPa = s ? s.pa : 0;
   c.punch[0] = Math.max(0, c.punch[0] - dt * 4.5);
   c.punch[1] = Math.max(0, c.punch[1] - dt * 4.5);
+  let gripReady = false;
+  if (!c.armV) c.armV = [new THREE.Vector3(), new THREE.Vector3()];
 
   [c.armL, c.armR].forEach((arm, i) => {
     const side = i === 0 ? -1 : 1;
     const rest = c.restArm[i];
     let tx = rest.x, ty = rest.y + Math.sin(time * 2.5 + i) * 0.03, tz = rest.z - side * sw * 0.3 * amt;
-    if (hang) {
+    let locked = false;
+    const peeled = peeling && c.peelT < (i === 0 ? PEEL - 0.02 : PEEL * 0.5);
+    if (hang && !peeled) {
       // Paws gripping the rail, hauling up hand over hand.
       tx = side * 0.42; ty = 1.75 + Math.max(0, Math.sin(time * 7 + i * Math.PI)) * 0.18; tz = 0.6;
-    }
-    else if (holding) { tx = side * 0.5; ty = 1.65; tz = 0.9; }
-    else if (c.weaponMesh && !(c.ko > 0.5)) {
+      locked = true;
+    } else if (peeled) {
+      tx = side * 1.05; ty = 2.0 + Math.sin(time * 22 + i * 2) * 0.15; tz = 0.05;
+    } else if (holding) {
+      // Reach for the buddy we're carrying and lock on either side of them.
+      const v = critters.get(s.h);
+      tx = side * 0.5; ty = 1.65; tz = 0.9;
+      if (v) {
+        if (!gripReady) { p.updateWorldMatrix(true, false); gripReady = true; }
+        _hv.set(v.x, v.root.position.y + 0.95, v.z);
+        p.worldToLocal(_hv);
+        tx = _hv.x + side * 0.42; ty = _hv.y; tz = _hv.z - 0.1;
+        const sh = c.shoulders?.[i];
+        if (sh) {
+          _rt.set(tx - sh.x, ty - sh.y, tz - sh.z);
+          const reach = _rt.length();
+          if (reach > 1.15) { _rt.multiplyScalar(1.15 / reach); tx = sh.x + _rt.x; ty = sh.y + _rt.y; tz = sh.z + _rt.z; }
+        }
+      }
+      locked = true;
+    } else if (th >= 0) {
+      // Throw follow-through: paws fling forward and up, then drop.
+      tx = side * 0.4; ty = 1.5 + Math.sin(th * Math.PI) * 0.7; tz = 0.7 + th * 0.5;
+      locked = true;
+    } else if (c.weaponMesh && !(c.ko > 0.5)) {
       const wp = c.weaponMesh.position;
       tx = wp.x + (i === 0 ? -0.3 : 0.06);
       ty = wp.y + (i === 0 ? 0.08 : -0.04);
       tz = wp.z + (i === 0 ? 0.08 : 0);
+      locked = true;
     }
     else if (airborne || held || falling) {
-      tx = side * 1.05; ty = 2.0 + Math.sin(time * 22 + i * 2) * 0.15; tz = 0.05;
+      const fast = held && s.mh ? 34 : 22;
+      tx = side * 1.05; ty = 2.0 + Math.sin(time * fast + i * 2) * 0.15; tz = 0.05;
     } else if (c.ko > 0.5) {
       tx = side * 1.15; ty = 1.0; tz = 0.4;
+    } else if (st > 0) {
+      // Windmilling to keep balance.
+      const a = time * 16 + i * Math.PI;
+      tx = side * (0.85 + Math.cos(a) * 0.15); ty = 1.35 + Math.sin(a) * 0.45 * st; tz = Math.cos(a) * 0.35;
+    } else if (getting && gu < 0.5) {
+      // Paws on the ground, pushing up.
+      tx = side * 0.55; ty = 0.2 - bounce; tz = 0.65;
     } else if (opts.wave && i === 1) {
       tx = 0.95 + Math.sin(time * 9) * 0.12; ty = 2.05; tz = 0.25;
     }
@@ -1362,39 +1597,91 @@ function animateCritter(c, dt, s, opts = {}) {
       tx = side * 0.45 * (1 - e) + side * 0.2 * e;
       ty = 1.35;
       tz = 0.35 + e * 1.05;
+      locked = true;
     }
-    const k = 1 - Math.exp(-dt * (c.weaponMesh ? 40 : 22));
-    arm.position.x += (tx - arm.position.x) * k;
-    arm.position.y += (ty - arm.position.y) * k;
-    arm.position.z += (tz - arm.position.z) * k;
+    const av = c.armV[i];
+    if (locked || !fl) {
+      const k = 1 - Math.exp(-dt * (c.weaponMesh ? 40 : 22));
+      arm.position.x += (tx - arm.position.x) * k;
+      arm.position.y += (ty - arm.position.y) * k;
+      arm.position.z += (tz - arm.position.z) * k;
+      av.set(0, 0, 0);
+    } else {
+      // Floppy: a springy paw that lags the body, so a hard stop swings the arms forward.
+      tx -= clampAbs(lax * 0.012, 0.3);
+      tz -= clampAbs(laz * 0.012, 0.3);
+      av.x += ((tx - arm.position.x) * 260 - av.x * 14) * dt;
+      av.y += ((ty - arm.position.y) * 260 - av.y * 14) * dt;
+      av.z += ((tz - arm.position.z) * 260 - av.z * 14) * dt;
+      arm.position.addScaledVector(av, dt);
+    }
     arm.scale.setScalar(1 + pn * 0.35);
   });
   if (c.punch[0] > 0 || c.punch[1] > 0) p.rotation.y = (c.punch[1] - c.punch[0]) * 0.35;
-  c.updateLimbs(bounce);
 
-  // Eyes: blink, squeeze shut when KO'd or falling
+  // Faces react: swirly KO eyes, a yelp on big hits, shock when grabbed, grit while winding up, smug after a throw.
   c.blink -= dt;
   if (c.blink < -0.12) c.blink = 2 + Math.random() * 4;
-  const shut = c.blink < 0 || c.ko > 0.5 || falling;
-  for (const e of c.eyes) e.scale.y = shut ? 0.12 : 1;
-
-  // Expressions: angry brows while fighting, open mouth when hurt or flying
-  const angry = c.punch[0] > 0 || c.punch[1] > 0 || holding;
+  const swirly = c.ko > 0.5;
+  const yelp = st > 0.35 && c.stumbleBig;
+  const shocked = !!held && !swirly;
+  const winding = !!(s && s.sw === 1);
+  const smug = c.smugT > 0 && !held && !swirly;
+  let eyeX = 1, eyeY = 1;
+  if (swirly) eyeY = 1;
+  else if (yelp) { eyeX = 1.15; eyeY = 0.1; }
+  else if (c.blink < 0 || falling) eyeY = 0.12;
+  else if (shocked) eyeX = eyeY = 1.22;
+  else if (winding) eyeY = 0.62;
+  else if (smug) eyeY = 0.5;
+  c.eyes.forEach((e, i) => {
+    e.scale.set(eyeX, eyeY, 1);
+    const sp = e.userData.swirl;
+    if (sp) { sp.visible = swirly; if (swirly) sp.rotation.z += dt * 9 * (i ? 1 : -1); }
+  });
+  const angry = c.punch[0] > 0 || c.punch[1] > 0 || holding || winding;
   for (const b of c.brows) {
-    const target = angry ? -b.userData.side * 0.45 : c.ouch > 0 || held || falling ? b.userData.side * 0.35 : 0;
+    const sd = b.userData.side;
+    const target = winding ? -sd * 0.6 : angry ? -sd * 0.45 : smug ? (sd > 0 ? 0.3 : -0.15) : c.ouch > 0 || held || falling || yelp ? sd * 0.35 : 0;
     b.userData.tilt = (b.userData.tilt || 0) + (target - (b.userData.tilt || 0)) * Math.min(1, dt * 12);
     b.rotation.z = Math.PI / 2 + b.userData.tilt;
+    if (b.userData.y0 === undefined) b.userData.y0 = b.position.y;
+    b.position.y = b.userData.y0 + (shocked ? 0.06 : smug && sd > 0 ? 0.04 : 0);
   }
-  const yell = c.ouch > 0 || held || falling || airborne || c.ko > 0.5;
+  const yell = c.ouch > 0 || held || falling || airborne || c.ko > 0.5 || yelp;
   c.openMouth.visible = yell;
+  c.openMouth.scale.set(shocked ? 0.8 : yelp ? 1.3 : 1, shocked ? 1.35 : yelp ? 1.5 : 1, 1);
   c.smile.visible = !yell && c.smileDefault !== false;
+  c.smile.scale.set(smug ? 1.45 : winding ? 1.1 : 1, smug ? 0.85 : winding ? 0.25 : 1, 1);
+  c.smile.rotation.z = smug ? 0.14 : 0;
 
-  c.stars.visible = c.ko > 0.3;
+  // Stars circle the head when knocked out or dizzy.
+  c.stars.visible = c.ko > 0.3 || dz > 0.35;
   if (c.stars.visible) {
-    c.stars.rotation.y += dt * 4;
-    c.stars.position.set(0, 1.3 + c.ko * 0.2, -c.ko * 1.2);
+    c.stars.rotation.y += dt * (c.ko > 0.3 ? 4 : 5.5);
+    c.stars.scale.setScalar(c.ko > 0.3 ? 1 : 0.8);
+    if (!ragging) c.stars.position.set(0, c.ko > 0.3 ? 1.3 + c.ko * 0.2 : (c.height || 2.75) * 0.62 + 0.55 + bounce, c.ko > 0.3 ? -c.ko * 1.2 : 0);
   }
-  if (s && s.dz > 55 && !ko) p.rotation.z += Math.sin(time * 8) * 0.08;
+
+  if (fl) {
+    const cf = Math.cos(c.face), sf = Math.sin(c.face);
+    const slack = ragging || c.ko > 0.5 ? 1 : held ? 0.4 : 0;
+    fl.update(dt, slack, c.dvx * cf - c.dvz * sf, c.dvx * sf + c.dvz * cf, full);
+    if (ragging) {
+      const rd = c.ragdoll;
+      const ground = falling ? -Infinity : s?.rv ? c.y - 0.25 : c.groundY ?? 0;
+      _rt.set(c.root.position.x, c.root.position.y + 0.5 + (c.hop || 0), c.root.position.z);
+      rd.step(dt, _rt, ground, !!(c.rag && (c.ragAir || falling)), !!(c.rag && ko));
+      poseRagdoll(c, rd, easeOut(c.ragW));
+      if (c.stars.visible) {
+        ragdollHead(rd, _hv);
+        _hv.y += 0.75;
+        c.stars.position.copy(c.root.worldToLocal(_hv));
+      }
+    }
+  }
+  c.updateLimbs(bounce);
+  fl?.stepChains(dt);
 
   c.root.visible = !(s && s.st === 'out' && room?.phase !== 'lobby');
 }
@@ -1859,7 +2146,21 @@ function handleEvent(e) {
   const c = critters.get(e.id);
   if (e.t === 'hit') {
     const target = critters.get(e.b);
-    if (target) { target.sq -= e.big ? 0.4 : 0.28; target.leanV -= 9; target.rip = 1; target.ouch = 0.5; target.jvz -= 4; }
+    if (target) {
+      target.sq -= e.big ? 0.4 : 0.28; target.rip = 1; target.ouch = 0.5; target.jvz -= 4;
+      // Stagger away from the attacker; the head snaps back the same way.
+      const from = critters.get(e.a);
+      let kx = target.x - (from ? from.x : e.x), kz = target.z - (from ? from.z : e.z);
+      const kl = Math.hypot(kx, kz) || 1;
+      kx /= kl; kz /= kl;
+      const cf = Math.cos(target.face), sf = Math.sin(target.face);
+      target.knockX = kx * cf - kz * sf;
+      target.knockZ = kx * sf + kz * cf;
+      target.stumbleT = STUMBLE;
+      target.stumbleBig = !!e.big;
+      target.floppy?.kickHead(target.knockZ * (e.big ? 10 : 7), -target.knockX * (e.big ? 10 : 7));
+      target.floppy?.jiggle(e.big ? 0.8 : 0.5);
+    }
     puff(e.x, e.y, e.z, e.big ? 10 : 6, e.w === 'blaster' ? '#ffc79a' : '#ffffff');
     comicWord(e.x, e.y, e.z, e.big, e.w && !e.big ? WEAPON_INFO[e.w]?.words : null);
     shake = Math.max(shake, e.big ? 0.5 : e.w ? 0.35 : 0.25);
@@ -1889,15 +2190,19 @@ function handleEvent(e) {
     puff(e.x, 0.1, e.z, 5, '#fff3a0', 1.8);
     sfx.drop();
   } else if (e.t === 'jump') {
-    if (c) c.sq += 0.3;
+    if (c && !(e.id === myId && recent(c.localJump, Math.max(0, rtt) + 400))) c.sq += 0.3;
     if (e.id === myId) sfx.jump();
   } else if (e.t === 'land') {
-    if (c) { c.sq -= 0.3; c.rip = 0.7; puff(c.x, 0.1, c.z, 4, '#ffffff', 2); }
+    if (c) { c.rip = 0.7; puff(c.x, 0.1, c.z, 4, '#ffffff', 2); }
     sfx.land();
   } else if (e.t === 'grab') {
+    const v = critters.get(e.target);
+    v?.floppy?.kickHead(-6, 0);
     sfx.grab();
   } else if (e.t === 'throw') {
-    if (c) c.leanV += 8;
+    if (c) { c.leanV += 8; c.throwT = THROW_FOLLOW; c.smugT = 1.8; }
+    const v = critters.get(e.target);
+    if (v) { v.thrownVis = true; v.thrownAt = performance.now(); }
     shake = Math.max(shake, 0.2);
     sfx.throw();
   } else if (e.t === 'ko') {
@@ -1943,7 +2248,7 @@ function handleEvent(e) {
     if (c) { c.sq += 0.4; puff(c.x, c.y + 0.4, c.z, 6, '#ffffff', 2); comicWord(c.x, c.y + 1.6, c.z, false, ['BACK!', 'SAFE!', 'HUP!']); }
     sfx.climb();
   } else if (e.t === 'letgo') {
-    if (c) comicWord(c.x, c.y + 1.2, c.z, true, ['BYE!', 'NOOO!', 'SEE YA!']);
+    if (c) { c.peelT = PEEL; comicWord(c.x, c.y + 1.2, c.z, true, ['BYE!', 'NOOO!', 'SEE YA!']); }
   } else if (e.t === 'shrinkWarn') {
     sfx.warn();
   }
@@ -2383,13 +2688,16 @@ function updateActionHints(me) {
 const projV = new THREE.Vector3();
 let lastFrame = performance.now();
 function frame(now) {
-  const dt = Math.min(0.05, (now - lastFrame) / 1000);
+  const rawDt = (now - lastFrame) / 1000;
+  const dt = Math.min(0.05, rawDt);
   lastFrame = now;
   time += dt;
 
   sendInput(now);
 
   const playing = room && room.phase !== 'lobby' && snap && snap.phase !== 'lobby';
+  watchFrameRate(rawDt, playing);
+  assignDetail(dt);
   const R = playing ? snap.islandR : ISLAND_MAX;
   islandScaled.scale.set(R, 1, R);
   rock.scale.y = 3 + 4 * (R / ISLAND_MAX);

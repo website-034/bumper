@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { makeStars } from './characters.js';
+import { makeFloppy } from './floppy.js';
 
 // Cowboy Corgi plus the shell-fur toolkit the rest of the crew (crew.js) is built from.
 export const SHELLS = matchMedia('(pointer: coarse)').matches ? 9 : 14;
@@ -79,6 +80,7 @@ export function furry(geometry, { len = 0.07, shells = SHELLS, density = 28 } = 
     shell.receiveShadow = true;
     group.add(shell);
   }
+  group.userData.fur = len;
   return group;
 }
 
@@ -187,7 +189,91 @@ export function makeEye(side, iris = '#6d3a1c', [x, y, z] = [0.26, 0.05, 0.62]) 
   eye.add(mesh(new THREE.SphereGeometry(0.045, 16, 12), glossy('#0d0806'), [0, -0.02, 0.085], [1, 1.1, 0.45]));
   eye.add(mesh(new THREE.SphereGeometry(0.032, 12, 10), glossy('#ffffff'), [0.04, 0.05, 0.08]));
   eye.add(mesh(new THREE.SphereGeometry(0.015, 10, 8), glossy('#ffffff'), [-0.035, -0.045, 0.085]));
+  // Knocked-out swirl, drawn over the eye.
+  const swirl = new THREE.Mesh(new THREE.CircleGeometry(0.125, 28), new THREE.MeshBasicMaterial({ map: swirlTexture(), transparent: true }));
+  swirl.position.z = 0.092;
+  swirl.scale.set(1, 1.12, 1);
+  swirl.visible = false;
+  eye.add(swirl);
+  eye.userData.swirl = swirl;
   return eye;
+}
+
+let swirlTex = null;
+function swirlTexture() {
+  if (swirlTex) return swirlTex;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 128;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fffaf2';
+  g.beginPath(); g.arc(64, 64, 62, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#2a1710';
+  g.lineWidth = 9;
+  g.lineCap = 'round';
+  g.beginPath();
+  for (let a = 0; a < Math.PI * 6; a += 0.1) {
+    const r = 4 + a * 2.9;
+    g.lineTo(64 + Math.cos(a) * r, 64 + Math.sin(a) * r);
+  }
+  g.stroke();
+  swirlTex = new THREE.CanvasTexture(cv);
+  swirlTex.colorSpace = THREE.SRGBColorSpace;
+  return swirlTex;
+}
+
+// ---------- Shared rig ----------
+// Every critter (corgi and the crew) ends up with this exact rig, so they all animate and
+// flop identically. flops: parts that become spring chains ({ obj, dir, len, kind, at }).
+export function rigFrom({ root, pivot, head, body, headFur, eyes, brows, smile, openMouth, arms, armLimbs, feet, legLimbs, stars, height, ears = [], flops = [], updates = [] }) {
+  const shoulders = [new THREE.Vector3(-0.44, 1.05, 0.05), new THREE.Vector3(0.44, 1.05, 0.05)];
+  const hips = [new THREE.Vector3(-0.22, 0.5, 0.02), new THREE.Vector3(0.22, 0.5, 0.02)];
+  const tmpHip = new THREE.Vector3();
+  // Ears point along their own up axis; their length comes from their size.
+  const box = new THREE.Box3(), size = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+  const earFlops = ears.map((e) => {
+    box.setFromObject(e).getSize(size);
+    return { obj: e, dir: new THREE.Vector3(0, 1, 0).applyQuaternion(e.quaternion), len: Math.max(0.15, Math.min(1.1, Math.max(size.x, size.y, size.z) * 0.8)), kind: 'ear' };
+  });
+  const rig = {
+    root,
+    pivot,
+    head,
+    face: head,
+    eyes,
+    brows,
+    smile,
+    smileDefault: true,
+    openMouth,
+    armL: arms[0],
+    armR: arms[1],
+    footL: feet[0],
+    footR: feet[1],
+    stars,
+    height,
+    shoulders,
+    restArm: [new THREE.Vector3(-0.72, 0.72, 0.15), new THREE.Vector3(0.72, 0.72, 0.15)],
+    footRest: [new THREE.Vector3(-0.25, 0.1, 0.08), new THREE.Vector3(0.25, 0.1, 0.08)],
+
+    // Legs hang off the hips wherever the body is (leaning, tipped over or ragdolled).
+    updateLimbs() {
+      pivot.updateMatrix();
+      for (let i = 0; i < 2; i++) {
+        stretchLimb(armLimbs[i], shoulders[i], arms[i].position, 0.085);
+        tmpHip.copy(hips[i]).applyMatrix4(pivot.matrix);
+        stretchLimb(legLimbs[i], tmpHip, feet[i].position, 0.095);
+      }
+    },
+
+    // Big head bobbles with the body's momentum (a beat late); ears flop on impacts.
+    updateJelly(ox, oz, ripple, t) {
+      rig.floppy.setJelly(ox, oz);
+      ears.forEach((e, i) => { e.rotation.z = e.userData.rz + Math.sin(t * 24 + i) * ripple * 0.35; });
+      for (const u of updates) u(ox, oz, ripple, t);
+    },
+  };
+  rig.floppy = makeFloppy(rig, { body, headFur, flops: [...earFlops, ...flops], furGroups: [body, headFur].filter(Boolean) });
+  return rig;
 }
 
 function makeHat() {
@@ -229,7 +315,8 @@ function makeBandana() {
   const cloth = new THREE.MeshStandardMaterial({ map: polkaDots(), roughness: 0.85 });
   g.add(mesh(new THREE.TorusGeometry(0.4, 0.075, 12, 40), cloth, [0, 0, 0], [1, 1, 0.75], [Math.PI / 2, 0, 0]));
   const flap = new THREE.ConeGeometry(0.3, 0.42, 3, 1);
-  g.add(mesh(flap, cloth, [0, -0.17, 0.29], [1, 1, 0.22], [Math.PI + 0.35, Math.PI / 6, 0]));
+  g.userData.flap = mesh(flap, cloth, [0, -0.17, 0.29], [1, 1, 0.22], [Math.PI + 0.35, Math.PI / 6, 0]);
+  g.add(g.userData.flap);
   g.add(mesh(new THREE.SphereGeometry(0.07, 14, 10), cloth, [0, 0.02, -0.33]));
   g.add(mesh(new THREE.ConeGeometry(0.06, 0.18, 8), cloth, [0.07, -0.08, -0.34], [1, 1, 0.5], [0.3, 0, 0.5]));
   g.add(mesh(new THREE.ConeGeometry(0.06, 0.18, 8), cloth, [-0.07, -0.08, -0.34], [1, 1, 0.5], [0.3, 0, -0.5]));
@@ -276,7 +363,8 @@ export function buildCorgi() {
     const lowerFace = smooth(-0.05, -0.3, v.y) * smooth(0.1, 0.45, v.z);
     c.copy(ORANGE).lerp(CREAM, Math.max(blaze, lowerFace));
   });
-  head.add(furry(headGeo, { len: 0.065, density: 30 }));
+  const headFur = furry(headGeo, { len: 0.065, density: 30 });
+  head.add(headFur);
 
   const muzzleGeo = paint(new THREE.SphereGeometry(0.29, 32, 24), (v, c) => c.copy(CREAM));
   const muzzle = furry(muzzleGeo, { len: 0.03, shells: 8, density: 22 });
@@ -316,6 +404,7 @@ export function buildCorgi() {
     const ear = new THREE.Group();
     ear.position.set(s * 0.5, 0.42, -0.06);
     ear.rotation.set(-0.12, 0, -s * 0.62);
+    ear.userData.rz = ear.rotation.z;
     const earGeo = paint(new THREE.ConeGeometry(0.25, 0.62, 28, 6), (v, c) => c.copy(ORANGE));
     const outer = furry(earGeo, { len: 0.035, shells: 8, density: 18 });
     outer.scale.set(1, 1, 0.42);
@@ -334,7 +423,6 @@ export function buildCorgi() {
   // Limbs and white-sock paws
   const furSolid = std('#e48a3e', { roughness: 0.9 });
   const sock = std('#fff3e2', { roughness: 0.9 });
-  const shoulders = [new THREE.Vector3(-0.44, 1.05, 0.05), new THREE.Vector3(0.44, 1.05, 0.05)];
   const arms = [-1, 1].map((s) => {
     const paw = new THREE.Group();
     paw.add(mesh(new THREE.SphereGeometry(0.15, 20, 14), sock, [0, 0, 0], [1, 0.9, 1.1]));
@@ -361,46 +449,16 @@ export function buildCorgi() {
     root.add(l);
     return l;
   });
-  const hips = [new THREE.Vector3(-0.22, 0.5, 0.02), new THREE.Vector3(0.22, 0.5, 0.02)];
-  const tmpHip = new THREE.Vector3();
 
   const stars = makeStars();
   root.add(stars);
 
-  return {
-    root,
-    pivot,
-    face: head,
-    eyes,
-    brows,
-    smile,
-    smileDefault: true,
-    openMouth,
-    armL: arms[0],
-    armR: arms[1],
-    footL: feet[0],
-    footR: feet[1],
-    stars,
+  return rigFrom({
+    root, pivot, head, body, headFur, eyes, brows, smile, openMouth, arms, armLimbs, feet, legLimbs, stars, ears,
     height: 2.75,
-    restArm: [new THREE.Vector3(-0.72, 0.72, 0.15), new THREE.Vector3(0.72, 0.72, 0.15)],
-
-    updateLimbs(bounce) {
-      for (let i = 0; i < 2; i++) {
-        stretchLimb(armLimbs[i], shoulders[i], arms[i].position, 0.085);
-        tmpHip.copy(hips[i]);
-        tmpHip.y += bounce;
-        stretchLimb(legLimbs[i], tmpHip, feet[i].position, 0.095);
-      }
-    },
-
-    // Big head bobbles with the body's momentum; ears flop on impacts.
-    updateJelly(ox, oz, ripple, t) {
-      head.rotation.x = oz * 1.1;
-      head.rotation.z = -ox * 1.1;
-      ears.forEach((ear, i) => {
-        const s = i === 0 ? -1 : 1;
-        ear.rotation.z = -s * 0.62 + Math.sin(t * 24 + i) * ripple * 0.35;
-      });
-    },
-  };
+    flops: [
+      { obj: tail, dir: new THREE.Vector3(0, 0, -1), len: 0.2, kind: 'bob' },
+      { obj: bandana.userData.flap, at: new THREE.Vector3(0, 0.02, 0.3), dir: new THREE.Vector3(0, -1, 0.3), len: 0.4, kind: 'cloth' },
+    ],
+  });
 }

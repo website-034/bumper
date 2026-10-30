@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeStars } from './characters.js';
-import { SHELLS, buildCorgi, furry, paint, deform, smooth, glossy, std, mesh, stretchLimb, limbGeo, makeEye } from './fluffy.js';
+import { SHELLS, buildCorgi, furry, paint, deform, smooth, glossy, std, mesh, limbGeo, makeEye, rigFrom } from './fluffy.js';
 
 // The playable roster: furry, dressed-up critters built in code. Ids must match ANIMALS in server.js.
 export const FLUFFY = {
@@ -127,7 +127,8 @@ function roundEar(x, s, { pos, rot = [0, 0, 0], r, color, inner, fur = 0.04, fla
 function neckerchief(mat) {
   const g = new THREE.Group();
   g.add(mesh(new THREE.TorusGeometry(0.4, 0.075, 12, 40), mat, [0, 0, 0], [1, 1, 0.75], [Math.PI / 2, 0, 0]));
-  g.add(mesh(new THREE.ConeGeometry(0.3, 0.42, 3, 1), mat, [0, -0.17, 0.29], [1, 1, 0.22], [Math.PI + 0.35, Math.PI / 6, 0]));
+  g.userData.flap = mesh(new THREE.ConeGeometry(0.3, 0.42, 3, 1), mat, [0, -0.17, 0.29], [1, 1, 0.22], [Math.PI + 0.35, Math.PI / 6, 0]);
+  g.add(g.userData.flap);
   g.add(mesh(sph(0.07, 14, 10), mat, [0, 0.02, -0.33]));
   [-1, 1].forEach((s) => g.add(mesh(new THREE.ConeGeometry(0.06, 0.18, 8), mat, [s * 0.07, -0.08, -0.34], [1, 1, 0.5], [0.3, 0, s * 0.5])));
   return g;
@@ -218,6 +219,7 @@ function beanie(main, band) {
   const pom = furry(paint(sph(0.14, 16, 12), solid(band)), { len: 0.05, shells: 6, density: 12 });
   pom.position.set(0, 0.58, 0);
   g.add(pom);
+  g.userData.pom = pom;
   return g;
 }
 
@@ -319,6 +321,10 @@ const brindle = (v, c) => {
   if (Math.sin(v.y * 40 + Math.sin(v.x * 9 + v.z * 7) * 2.2) > 0.3) c.lerp(BRIN_D, 0.65);
 };
 const sway = (x, fn) => x.updates.push(fn);
+// Parts that swing on spring chains (shared presets in floppy.js, so every critter flops alike).
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+const flop = (x, obj, dir, len, kind, at, rotate = true) => x.flops.push({ obj, dir, len, kind, at, rotate });
+const flapOf = (x, kerchief) => flop(x, kerchief.userData.flap, V3(0, -1, 0.3), 0.4, 'cloth', V3(0, 0.02, 0.3));
 
 const LOOKS = {
   cat: {
@@ -348,7 +354,8 @@ const LOOKS = {
       });
       tail.add(furry(tailGeo, { len: 0.04, shells: 8, density: 12 }));
       x.pivot.add(tail);
-      sway(x, (ox, oz, rip, t) => { tail.rotation.y = Math.sin(t * 2.2) * 0.3; tail.rotation.x = oz * 0.6; });
+      sway(x, (ox, oz, rip, t) => { tail.rotation.y = Math.sin(t * 2.2) * 0.3; });
+      flop(x, tail, V3(0, 0.25, -1), 0.9, 'tail');
 
       const hat = tricorn();
       hat.position.set(0, 0.5, -0.02);
@@ -370,6 +377,7 @@ const LOOKS = {
       const kerchief = neckerchief(new THREE.MeshStandardMaterial({ map: stripes('#c62f3a', '#f6efe4', 8, [6, 1]), roughness: 0.85 }));
       kerchief.position.set(0, 1.22, 0.02);
       x.pivot.add(kerchief);
+      flapOf(x, kerchief);
     },
   },
 
@@ -403,7 +411,8 @@ const LOOKS = {
         b.add(mesh(new THREE.ConeGeometry(0.05, 0.12, 10), std('#e6b84a'), [0, -0.46, 0]));
         b.rotation.x = 0.35;
         x.pivot.add(b);
-        sway(x, (ox, oz, rip, t) => { b.rotation.z = -ox * 1.2 + Math.sin(t * 3 + s) * 0.06; });
+        sway(x, (ox, oz, rip, t) => { b.rotation.z = Math.sin(t * 3 + s) * 0.06; });
+        flop(x, b, V3(0, -0.94, -0.34), 0.45, 'cloth');
       });
     },
   },
@@ -446,9 +455,11 @@ const LOOKS = {
       const pom = furry(paint(sph(0.17, 18, 14), white), { len: 0.09, shells: 10, density: 14 });
       pom.position.set(0, 0.66, -0.5);
       x.pivot.add(pom);
+      flop(x, pom, V3(0, 0, -1), 0.2, 'bob');
       const kerchief = neckerchief(std('#d63a3a', { roughness: 0.8 }));
       kerchief.position.set(0, 1.22, 0.02);
       x.pivot.add(kerchief);
+      flapOf(x, kerchief);
     },
   },
 
@@ -471,13 +482,14 @@ const LOOKS = {
       hat.position.set(0, 0.2, -0.02);
       hat.rotation.x = -0.1;
       x.head.add(hat);
+      flop(x, hat.userData.pom, V3(0, 1, 0), 0.18, 'bob');
       const wrap = scarf(
         new THREE.MeshStandardMaterial({ map: stripes('#e8803a', '#f3e3c3', 10, [8, 1]), roughness: 0.9 }),
         new THREE.MeshStandardMaterial({ map: stripes('#e8803a', '#f3e3c3', 6, [1, 1], true), roughness: 0.9 }),
       );
       wrap.position.set(0, 1.22, 0.02);
       x.pivot.add(wrap);
-      sway(x, (ox, oz) => { wrap.userData.end.rotation.x = 0.25 + Math.max(-0.2, -oz * 1.5); });
+      flop(x, wrap.userData.end, V3(0, -1, 0.25), 0.5, 'cloth');
 
       const tailGeo = paint(new THREE.CapsuleGeometry(0.17, 0.75, 8, 18), (v, c) => {
         c.copy(Math.floor((v.y + 0.55) / 0.19) % 2 ? RAC_D : RAC_L);
@@ -490,7 +502,8 @@ const LOOKS = {
       fluff.scale.set(1.15, 1, 1.15);
       tail.add(fluff);
       x.pivot.add(tail);
-      sway(x, (ox, oz, rip, t) => { tail.rotation.set(-1.05 + oz * 0.6, 0, Math.sin(t * 2.4) * 0.25); });
+      sway(x, (ox, oz, rip, t) => { tail.rotation.set(-1.05, 0, Math.sin(t * 2.4) * 0.25); });
+      flop(x, tail, V3(0, 0.5, -0.87), 1.0, 'tail');
     },
   },
 
@@ -534,9 +547,11 @@ const LOOKS = {
       kerchief.position.set(0, 1.3, 0.04);
       kerchief.scale.setScalar(1.2);
       x.pivot.add(kerchief);
+      flapOf(x, kerchief);
       const tail = furry(paint(sph(0.14, 16, 12), wool), { len: 0.1, shells: 8, density: 12 });
       tail.position.set(0, 0.7, -0.6);
       x.pivot.add(tail);
+      flop(x, tail, V3(0, 0, -1), 0.2, 'bob');
     },
   },
 
@@ -557,7 +572,8 @@ const LOOKS = {
       helmet.position.set(0, 0.08, 0.02);
       x.head.add(helmet);
       const antenna = helmet.userData.antenna;
-      sway(x, (ox, oz, rip, t) => { antenna.rotation.z = -0.28 - ox * 1.5 + Math.sin(t * 20) * rip * 0.4; antenna.rotation.x = oz * 1.5; });
+      sway(x, (ox, oz, rip, t) => { antenna.rotation.z = -0.28 + Math.sin(t * 20) * rip * 0.4; });
+      flop(x, antenna, V3(-0.28, 1, 0), 0.45, 'ear');
       const pack = new THREE.Group();
       pack.position.set(0, 1.0, -0.62);
       pack.add(mesh(new THREE.BoxGeometry(0.56, 0.56, 0.22), std('#f1f3f6', { roughness: 0.5 })));
@@ -596,6 +612,7 @@ const LOOKS = {
       const nub = furry(paint(sph(0.1, 14, 10), brindle), { len: 0.03, shells: 6, density: 16 });
       nub.position.set(0, 0.62, -0.52);
       x.pivot.add(nub);
+      flop(x, nub, V3(0, 0, -1), 0.15, 'bob');
     },
   },
 
@@ -616,7 +633,9 @@ const LOOKS = {
         const a = (i / 16) * Math.PI * 3;
         return new THREE.Vector3(Math.sin(a) * 0.07, Math.cos(a) * 0.07 - 0.07, -(i / 16) * 0.25);
       }), 0.026, 0.6, 40, 8);
-      x.pivot.add(mesh(curl, std('#f3a0b2'), [0, 0.66, -0.5]));
+      const curlTail = mesh(curl, std('#f3a0b2'), [0, 0.66, -0.5]);
+      x.pivot.add(curlTail);
+      flop(x, curlTail, V3(0, 0, -1), 0.25, 'bob');
 
       // Cape: hangs from the shoulders and streams out behind when running.
       const W = 1.05, H = 1.25;
@@ -631,21 +650,19 @@ const LOOKS = {
       x.pivot.add(mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.02, 24), gold, [0, 0.98, 0.52], [1, 1, 1], [Math.PI / 2 - 0.25, 0, 0]));
       x.pivot.add(mesh(new THREE.BoxGeometry(0.05, 0.14, 0.02), std('#d8282e'), [0, 0.985, 0.535], [1, 1, 1], [-0.25, 0, 0.4]));
       const pos = capeGeo.attributes.position;
-      let lastT = 0, lastX = 0, lastZ = 0, speed = 0;
+      // The cape's spring chain says how far its hem has swung; the cloth bends to follow it.
+      flop(x, cape, V3(0, -1, -0.1), 1.2, 'cloth', undefined, false);
       sway(x, (ox, oz, rip, t) => {
-        const dt = t - lastT;
-        if (dt > 0 && dt < 0.2) {
-          const p = x.root.position;
-          speed += (Math.min(8, Math.hypot(p.x - lastX, p.z - lastZ) / dt) - speed) * Math.min(1, dt * 6);
-        }
-        lastT = t; lastX = x.root.position.x; lastZ = x.root.position.z;
-        const billow = 0.12 + speed * 0.11;
+        const bend = cape.userData.chain?.bend;
+        // Cape space is turned round (rotation.y = PI): pivot -z is the cape's +z.
+        const bx_ = bend ? -bend.x * H : 0, by_ = bend ? bend.y * H : 0, bz_ = bend ? -bend.z * H : 0;
+        const swing = Math.min(1.5, Math.hypot(bx_, bz_));
         for (let i = 0; i < pos.count; i++) {
           const bx = base[i * 3], by = base[i * 3 + 1];
-          const h = -by / H;
+          const h = -by / H, h2 = h * h;
           const nx = bx * (0.55 + 0.45 * h);
-          const flap = Math.sin(t * 9 - h * 5 + bx * 3) * 0.05 * h * (0.4 + speed * 0.15) + rip * Math.sin(t * 22 + h * 6) * 0.08 * h;
-          pos.setXYZ(i, nx, by + h * h * billow * 0.35, -nx * nx * 0.5 + h * h * billow + flap - oz * h * 0.6);
+          const flap = Math.sin(t * 9 - h * 5 + bx * 3) * 0.05 * h * (0.4 + swing * 1.2) + rip * Math.sin(t * 22 + h * 6) * 0.08 * h;
+          pos.setXYZ(i, nx + h2 * bx_, by + h2 * (0.04 + Math.max(0, by_)), -nx * nx * 0.5 + h2 * 0.12 + h2 * Math.max(0, bz_) + flap);
         }
         pos.needsUpdate = true;
         capeGeo.computeVertexNormals();
@@ -690,7 +707,8 @@ const LOOKS = {
       fluff.position.y = L;
       tail.add(fluff);
       x.pivot.add(tail);
-      sway(x, (ox, oz, rip, t) => { tail.rotation.set(-0.35 + oz * 0.5, 0, Math.sin(t * 1.8) * 0.12 - ox * 0.5); });
+      sway(x, (ox, oz, rip, t) => { tail.rotation.set(-0.35, 0, Math.sin(t * 1.8) * 0.12); });
+      flop(x, tail, V3(0, 0.94, -0.34), 1.6, 'tail');
 
       const badge = magnifier();
       badge.position.set(0.2, 1.0, 0.55);
@@ -724,7 +742,8 @@ export function buildFluffy(id) {
     const cheek = smooth(0.05, -0.25, v.y) * smooth(0.25, 0.6, Math.abs(v.x));
     v.x += Math.sign(v.x) * cheek * (L.cheeks ?? 0.07);
   });
-  head.add(furry(paint(headGeo, L.head), { len: L.headFur ?? fur * 1.08, density: density + 4 }));
+  const headFur = furry(paint(headGeo, L.head), { len: L.headFur ?? fur * 1.08, density: density + 4 });
+  head.add(headFur);
 
   if (L.muzzle) {
     const m = L.muzzle;
@@ -760,12 +779,11 @@ export function buildFluffy(id) {
   openMouth.visible = false;
   head.add(openMouth);
 
-  const x = { root, pivot, head, body, eyes, ears: [], updates: [] };
+  const x = { root, pivot, head, body, eyes, ears: [], updates: [], flops: [] };
   L.build(x);
 
   const limbMat = std(L.limb, { roughness: 0.9 });
   const pawMat = std(L.paw ?? L.limb, { roughness: 0.9 });
-  const shoulders = [new THREE.Vector3(-0.44, 1.05, 0.05), new THREE.Vector3(0.44, 1.05, 0.05)];
   const arms = [-1, 1].map((s) => {
     const paw = new THREE.Group();
     paw.add(mesh(new THREE.SphereGeometry(0.15, 20, 14), pawMat, [0, 0, 0], [1, 0.9, 1.1]));
@@ -783,43 +801,12 @@ export function buildFluffy(id) {
     return foot;
   });
   const legLimbs = [0, 1].map(() => { const l = mesh(limbGeo, limbMat); root.add(l); return l; });
-  const hips = [new THREE.Vector3(-0.22, 0.5, 0.02), new THREE.Vector3(0.22, 0.5, 0.02)];
-  const tmpHip = new THREE.Vector3();
 
   const stars = makeStars();
   root.add(stars);
 
-  return {
-    root,
-    pivot,
-    face: head,
-    eyes,
-    brows,
-    smile,
-    smileDefault: true,
-    openMouth,
-    armL: arms[0],
-    armR: arms[1],
-    footL: feet[0],
-    footR: feet[1],
-    stars,
-    height: L.height ?? 2.75,
-    restArm: [new THREE.Vector3(-0.72, 0.72, 0.15), new THREE.Vector3(0.72, 0.72, 0.15)],
-
-    updateLimbs(bounce) {
-      for (let i = 0; i < 2; i++) {
-        stretchLimb(armLimbs[i], shoulders[i], arms[i].position, 0.085);
-        tmpHip.copy(hips[i]);
-        tmpHip.y += bounce;
-        stretchLimb(legLimbs[i], tmpHip, feet[i].position, 0.095);
-      }
-    },
-
-    updateJelly(ox, oz, ripple, t) {
-      head.rotation.x = oz * 1.1;
-      head.rotation.z = -ox * 1.1;
-      x.ears.forEach((e, i) => { e.rotation.z = e.userData.rz + Math.sin(t * 24 + i) * ripple * 0.35; });
-      for (const u of x.updates) u(ox, oz, ripple, t);
-    },
-  };
+  return rigFrom({
+    root, pivot, head, body, headFur, eyes, brows, smile, openMouth, arms, armLimbs, feet, legLimbs, stars,
+    height: L.height ?? 2.75, ears: x.ears, flops: x.flops, updates: x.updates,
+  });
 }

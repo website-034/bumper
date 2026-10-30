@@ -1298,6 +1298,7 @@ function stepPhysics(room, dt) {
     p.kickT = Math.max(0, p.kickT - dt);
     p.thrownT = Math.max(0, p.thrownT - dt);
     p.fireQ = Math.max(0, p.fireQ - dt);
+    p.mashT = Math.max(0, (p.mashT || 0) - dt);
     if (p.koT <= 0) p.dizzy = Math.max(0, p.dizzy - DIZZY_DECAY * dt);
 
     if (p.isBot && room.phase === 'playing') botThink(room, p, dt);
@@ -1313,7 +1314,7 @@ function stepPhysics(room, dt) {
     }
 
     if (p.heldBy) {
-      if (inp.punch || inp.jump) p.holdT += 0.3;
+      if (inp.punch || inp.jump) { p.holdT += 0.3; p.mashT = 0.3; }
       inp.punch = inp.jump = inp.kick = false;
       p.fireQ = 0;
       continue;
@@ -1573,6 +1574,7 @@ function snapshot(room) {
       pa: p.punchT > 0 ? (p.punchArm ? 2 : 1) : 0,
       h: p.holding || '',
       hb: p.heldBy || '',
+      mh: p.heldBy && p.mashT > 0 ? 1 : 0, // visual only: legs kick while mashing to escape
       dz: Math.round(p.dizzy),
       w: weaponItem(room, p)?.type || '',
       sw: p.swingWind > 0 ? 1 : p.spinT > 0 ? 3 : p.punchT > 0 && p.weapon ? 2 : 0,
