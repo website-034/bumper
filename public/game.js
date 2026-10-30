@@ -9,7 +9,8 @@ await loadManifest();
 // Furry and jelly critters plus any .glb characters listed in /models/characters.json.
 const CHARACTERS = { ...FLUFFY, ...ANIMALS, ...MODEL_CHARACTERS };
 
-const socket = io();
+// Straight to WebSocket (skips the long-polling handshake), falling back to polling if blocked.
+const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
 const $ = (id) => document.getElementById(id);
 const canvas = $('game');
 
@@ -1059,9 +1060,96 @@ function angleLerp(a, b, t) {
   return a + d * t;
 }
 
+// ---------- Local prediction: my critter reacts to my input instantly, then eases onto the server ----------
+// Must match server.js: GROUND_ACCEL, AIR_ACCEL, JUMP_VEL, GRAVITY, PUNCH_COOLDOWN, KICK_COOLDOWN, AIM_TURN.
+const PRED = { accel: 9, airAccel: 2.5, jump: 8.5, gravity: 24, punchCd: 420, kickCd: 700, aimTurn: 22 };
+const myMove = { x: 0, z: 0 };let rtt = -1;
+setInterval(() => {
+  if (!socket.connected) return;
+  const t0 = performance.now();
+  socket.volatile.emit('rtt', () => {
+    const r = performance.now() - t0;
+    rtt = rtt < 0 ? r : rtt + (r - rtt) * 0.25;
+  });
+}, 2000);
+
+const canPredict = (s) => !!s && snap?.phase === 'playing' && s.st === 'alive' && !s.fl && !s.ko && !s.sn && !s.hb && !s.hg && !s.lt;
+const recent = (t, ms) => performance.now() - (t || 0) < ms;
+
+// Where my critter was (locally) at time t, so a snapshot is compared against the same moment.
+function predAt(hist, t) {
+  if (!hist.length || t <= hist[0].t) return hist[0];
+  for (let i = hist.length - 1; i > 0; i--) {
+    const a = hist[i - 1], b = hist[i];
+    if (a.t <= t) {
+      const k = b.t > a.t ? (t - a.t) / (b.t - a.t) : 1;
+      return { x: a.x + (b.x - a.x) * k, z: a.z + (b.z - a.z) * k };
+    }
+  }
+  return hist[0];
+}
+
+function predictMe(c, s, dt) {
+  if (!canPredict(s)) { c.pred = false; return false; }
+  const now = performance.now();
+  if (!c.pred) { c.pred = true; c.pvx = s.vx; c.pvz = s.vz; c.ex = c.ez = 0; c.hist = []; c.reconT = snapTime; }
+  const k = Math.min(1, (s.g ? PRED.accel : PRED.airAccel) * (s.rv ? 0.5 : 1) * dt);
+  c.pvx += (myMove.x * s.ms - c.pvx) * k;
+  c.pvz += (myMove.z * s.ms - c.pvz) * k;
+  c.x += c.pvx * dt;
+  c.z += c.pvz * dt;
+
+  if (c.reconT !== snapTime) {
+    c.reconT = snapTime;
+    const h = predAt(c.hist, snapTime - Math.max(0, rtt));
+    c.ex = s.x - (h ? h.x : c.x);
+    c.ez = s.z - (h ? h.z : c.z);
+    if (Math.hypot(c.ex, c.ez) > 3) { c.x += c.ex; c.z += c.ez; c.ex = c.ez = 0; c.hist.length = 0; c.pvx = s.vx; c.pvz = s.vz; }
+  }
+  const ke = 1 - Math.exp(-dt * 8);
+  const dx = c.ex * ke, dz = c.ez * ke;
+  c.x += dx; c.z += dz; c.ex -= dx; c.ez -= dz;
+  for (const h of c.hist) { h.x += dx; h.z += dz; }
+  c.hist.push({ t: now, x: c.x, z: c.z });
+  while (c.hist.length > 2 && c.hist[0].t < now - 1000) c.hist.shift();
+
+  // Facing follows the same rules as the server: aim first, otherwise the way we move.
+  const ml = Math.hypot(myMove.x, myMove.z);
+  if (myAim) c.face = angleLerp(c.face, Math.atan2(myAim.x, myAim.z), Math.min(1, dt * PRED.aimTurn));
+  else if (ml > 0.15) c.face = angleLerp(c.face, Math.atan2(myMove.x, myMove.z), Math.min(1, dt * 14));
+  else c.face = angleLerp(c.face, c.tface, 1 - Math.exp(-dt * 6));
+  return true;
+}
+
+// Start the jump / punch / kick animation the moment the button is pressed.
+function predictActions(punch, jump, kick) {
+  const c = critters.get(myId), s = c?.s;
+  if (!canPredict(s) || !c.pred) return;
+  if (jump && s.g && !(c.lift > 0)) {
+    const melee = s.w && !WEAPON_INFO[s.w]?.ranged && !WEAPON_INFO[s.w]?.bomb;
+    c.liftV = PRED.jump * (melee ? 0.75 : 1);
+    c.lift = 0.001;
+    c.liftBase = c.y;
+  }
+  if (punch && !s.w && !s.h && !recent(c.localPunch, PRED.punchCd)) {
+    c.localPunch = performance.now();
+    c.localArm = 1 - (c.localArm || 0);
+    if (c.kind === 'model') { c.punchT = 0.45; c.setState('punch', { restart: true, duration: 0.45 }); }
+    else c.punch[c.localArm] = 1;
+  }
+  if (kick && !s.h && !recent(c.localKick, PRED.kickCd)) {
+    c.localKick = performance.now();
+    c.kickNow = true;
+  }
+}
+
 function animateCritter(c, dt, s, opts = {}) {
   const ox = c.x, oz = c.z;
-  if (s) {
+  if (s && opts.me && predictMe(c, s, dt)) {
+    const age = Math.min(0.1, (performance.now() - snapTime) / 1000);
+    const py = c.ty + c.tvy * age * (s.g ? 0 : 1);
+    c.y += (py - c.y) * (1 - Math.exp(-dt * 16));
+  } else if (s) {
     const age = Math.min(0.1, (performance.now() - snapTime) / 1000);
     const px = c.tx + c.tvx * age, py = c.ty + c.tvy * age * (s.g ? 0 : 1), pz = c.tz + c.tvz * age;
     if (Math.hypot(px - c.x, pz - c.z) > 4) { c.x = px; c.z = pz; c.y = py; }
@@ -1095,9 +1183,14 @@ function animateCritter(c, dt, s, opts = {}) {
   const holding = s && s.h;
   const ko = s && s.ko;
   const falling = s && s.fl;
-  const airborne = !grounded && !held;
+  if (c.lift > 0) {
+    c.liftV -= PRED.gravity * dt;
+    c.lift = Math.max(0, c.lift + c.liftV * dt);
+    if (!opts.me || !c.pred) c.lift = 0;
+  }
+  const airborne = (!grounded || c.lift > 0) && !held;
 
-  c.root.position.set(c.x, c.y, c.z);
+  c.root.position.set(c.x, c.lift > 0 ? Math.max(c.y, c.liftBase + c.lift) : c.y, c.z);
   c.root.rotation.y = c.face;
   // Wading: sink into the river and kick up splashes.
   const wet = !!(s && s.rv);
@@ -1133,7 +1226,8 @@ function animateCritter(c, dt, s, opts = {}) {
   updateHeldWeapon(c, dt, s);
 
   // Kick: lean back and shoot one leg forward.
-  const kickStart = !!(s && s.kk && !c.lastKk);
+  const kickStart = (!!(s && s.kk && !c.lastKk) && !recent(c.localKick, Math.max(0, rtt) + 250)) || !!c.kickNow;
+  c.kickNow = false;
   if (kickStart) c.kickA = 1;
   c.lastKk = s ? s.kk : 0;
   c.kickA = Math.max(0, (c.kickA || 0) - dt * 3.2);
@@ -1165,7 +1259,7 @@ function animateCritter(c, dt, s, opts = {}) {
   c.footR.scale.setScalar(1 + kickE * 0.3);
 
   // Arms
-  if (s && s.pa && s.pa !== c.lastPa && !c.weaponType) c.punch[s.pa - 1] = 1;
+  if (s && s.pa && s.pa !== c.lastPa && !c.weaponType && !recent(c.localPunch, Math.max(0, rtt) + 250)) c.punch[s.pa - 1] = 1;
   c.lastPa = s ? s.pa : 0;
   c.punch[0] = Math.max(0, c.punch[0] - dt * 4.5);
   c.punch[1] = Math.max(0, c.punch[1] - dt * 4.5);
@@ -1237,7 +1331,7 @@ function animateCritter(c, dt, s, opts = {}) {
 
 function animateModel(c, dt, { s, speed, held, holding, ko, falling, airborne, opts, kickStart }) {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  if ((s && s.pa && s.pa !== c.lastPa) || kickStart) {
+  if ((s && s.pa && s.pa !== c.lastPa && !recent(c.localPunch, Math.max(0, rtt) + 250)) || kickStart) {
     c.punchT = 0.45;
     c.setState('punch', { restart: true, duration: 0.45 });
   }
@@ -1958,14 +2052,15 @@ function sendInput(now) {
   }
   const grab = keys.has('KeyK') || keys.has('ShiftLeft') || keys.has('ShiftRight') || mouseGrab || touchGrab;
   myAim = computeAim();
+  myMove.x = x; myMove.z = z;
   const a = fireQueued ? fireAim : myAim;
   const key = `${x.toFixed(2)},${z.toFixed(2)},${grab},${a ? `${a.x.toFixed(2)},${a.z.toFixed(2)}` : ''}`;
-  // The follow camera keeps turning, so cap steady-state sends at ~30 Hz.
-  if (punchQueued || jumpQueued || kickQueued || fireQueued || (key !== lastSent && now - lastSendTime > 33) || now - lastSendTime > 150) {
+  if (punchQueued || jumpQueued || kickQueued || fireQueued || (key !== lastSent && now - lastSendTime > 15) || now - lastSendTime > 150) {
     socket.emit('input', {
       x, z, grab, punch: punchQueued, jump: jumpQueued, kick: kickQueued,
       fire: fireQueued, aim: !!myAim, ax: a ? a.x : 0, az: a ? a.z : 0,
     });
+    predictActions(punchQueued, jumpQueued, kickQueued);
     lastSent = key;
     lastSendTime = now;
     punchQueued = jumpQueued = kickQueued = fireQueued = false;
@@ -2235,7 +2330,7 @@ function frame(now) {
         animateCritter(c, dt, c.s, { wave: p.id === myId });
       } else {
         const hop = room.phase === 'roundover' && (p.id === room.winnerId || (room.winnerTeam >= 0 && p.team === room.winnerTeam));
-        animateCritter(c, dt, c.s, { hop });
+        animateCritter(c, dt, c.s, { hop, me: p.id === myId });
       }
       updateTeamMarker(c, p);
       const show = c.root.visible && !(c.s && c.s.fl);

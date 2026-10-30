@@ -1360,6 +1360,7 @@ function stepPhysics(room, dt) {
       if (p.kickWind > 0 || p.kickT > 0) speed *= 0.5;
       if (p.heaveT > 0) speed *= 0.1;
       if (rv) speed *= RIVER_WADE;
+      p.moveSpd = speed;
       const accel = (p.grounded ? GROUND_ACCEL : AIR_ACCEL) * (rv ? 0.5 : 1);
       p.vx += (ix * speed - p.vx) * Math.min(1, accel * dt);
       p.vz += (iz * speed - p.vz) * Math.min(1, accel * dt);
@@ -1559,6 +1560,7 @@ function snapshot(room) {
       ko: p.koT > 0 ? 1 : 0,
       sn: p.stunT > 0 ? 1 : 0,
       g: p.grounded ? 1 : 0,
+      ms: r2(p.moveSpd || 0),
       pa: p.punchT > 0 ? (p.punchArm ? 2 : 1) : 0,
       h: p.holding || '',
       hb: p.heldBy || '',
@@ -1620,6 +1622,8 @@ io.on('connection', (socket) => {
     if (code && String(code).toLowerCase().trim() !== ROOM_CODE) return socket.emit('errorMsg', 'Room not found');
     join(getRoom(), name, animal);
   });
+
+  socket.on('rtt', (cb) => { if (typeof cb === 'function') cb(); });
 
   socket.on('setAnimal', (animal) => {
     if (!room || room.phase !== 'lobby') return;
