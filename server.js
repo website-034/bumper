@@ -47,19 +47,40 @@ const MAX_HOLD = 3.5;
 const THROW_SPEED = 13;
 const ISLAND_START = 28;
 const ISLAND_MIN = 6;
-const SHRINK_DELAY = 20;
+const THROW_VY = 7;
+const THROW_OFF = 1.35;
+// Thrown players are the only thing the fence lets through.
+const THROWN_TIME = 1.6;
+const SHRINK_DELAY = 300;
 const SHRINK_DURATION = 120;
+const SHRINK_WARN = 15;
 const SPAWN_R = 13;
 const PICKUP_RANGE = 1.9;
 const MAX_GROUND_ITEMS = 20;
 const OBSTACLE_COUNT = 32;
-// Small floating rock islands just past the edge; they drop once the gap is too wide to jump.
-const PLATFORM_COUNT = 4;
-const PLATFORM_R = 2.4;
-const PLATFORM_MAX_GAP = 5.5;
-// Fenced stretches of the edge that stop players from being knocked off there.
-const GUARD_COUNT = 4;
-const GUARD_INSET = 0.5;
+// The whole edge is fenced except where the river spills off it.
+const GUARD_INSET = 0.25;
+const FENCE_GAP_MARGIN = 1.2;
+// Thrown players that drop past the fence close enough can grab the rail and climb back in.
+const HANG_REACH = 1.5;
+const HANG_REACH_GRAB = 3.2;
+const HANG_MAX_Y = 2.4;
+const HANG_OUT = 0.3;
+const HANG_Y = -0.9;
+const HANG_CLIMB = 2.6;
+const HANG_MASH = 0.12;
+// Kicks: quick startup, modest shove; bombs on the ground get booted along it.
+const KICK_STARTUP = 0.1;
+const KICK_COOLDOWN = 0.7;
+const KICK_RANGE = 2.2;
+const KICK_KNOCK = 7;
+const KICK_DIZZY = 15;
+const KICK_BOMB_RANGE = 1.9;
+const KICK_BOMB_SPEED = 17;
+const SKID_FRICTION = 1.2;
+// Aimed releases stay buffered briefly so a throw isn't lost to a cooldown.
+const FIRE_BUFFER = 0.35;
+const AIM_TURN = 22;
 // River: a current along its centreline that carries players off the island's edge.
 const RIVER_HALF = 1.7;
 const RIVER_FLOW = 6;
@@ -69,7 +90,14 @@ const BRIDGE_HALF_LEN = 1.15;
 // Sticky bombs only light when picked up, and cling to whoever they're thrown at.
 const BOMB_FUSE = 5;
 const BOMB_RADIUS = 3.2;
-const BOMB_KNOCK = 14;
+// Bombs only shove and daze: heavy dizziness near the centre, never a launch.
+const BOMB_KNOCK = 3.5;
+const BOMB_DIZZY_MIN = 60;
+const BOMB_STUN = 0.7;
+const BOMB_TOSS_SPEED = 12;
+const BOMB_TOSS_VY = 6;
+const WEAPON_TOSS_SPEED = 15;
+const WEAPON_TOSS_VY = 3.5;
 const MAX_BOMBS = 12;
 const STICKY_CHANCE = 0.3;
 const TEAM_SIZES = [0, 2, 3, 4];
@@ -77,17 +105,19 @@ const FALL_OUT_Y = -14;
 const COUNTDOWN = 3;
 const ROUND_OVER_TIME = 5;
 const MAX_PLAYERS = 8;
+const ROOM_CODE = 'ghouse';
 
-// Melee weapons hit everyone in a cone in front; the blaster fires foam balls.
-// Heavy melee weapons are dragged (carry = speed multiplier), wind up before striking,
-// and knock anyone they hit straight into the dizzy state.
+// Melee weapons wind up, then hit a shape: a forward cone, a wide sweep (pan) or a spin (hammer).
+// carry = speed multiplier while held. dizzy defaults to 100 (instant knockout).
+// The bat is the fast one: it only dazes, and hitting someone already dazed wakes them back up.
+// windup values must match WEAPON_INFO in public/weapons.js.
 const WEAPONS = {
-  bat: { range: 3.3, cone: 0.15, knock: 9, windup: 0.38, cd: 0.95, uses: 6, carry: 0.68, weight: 3 },
-  pan: { range: 3.0, cone: 0.15, knock: 8, windup: 0.3, cd: 0.8, uses: 7, carry: 0.75, weight: 3 },
-  hammer: { range: 3.4, cone: 0.1, knock: 12, windup: 0.55, cd: 1.2, uses: 4, carry: 0.55, weight: 2 },
-  lollipop: { range: 3.3, cone: 0.15, knock: 9, windup: 0.4, cd: 0.95, uses: 6, carry: 0.68, weight: 2 },
-  chicken: { range: 2.9, cone: 0.2, knock: 7, windup: 0.26, cd: 0.7, uses: 8, carry: 0.82, weight: 2 },
-  blaster: { ranged: true, cd: 0.55, uses: 6, speed: 20, knock: 9, dizzy: 35, life: 1.0, carry: 0.9, weight: 1 },
+  bat: { range: 3.0, cone: 0.2, knock: 7, dizzy: 45, wakes: true, windup: 0.1, cd: 0.36, uses: 12, carry: 0.88, weight: 3 },
+  chicken: { range: 2.9, cone: 0.2, knock: 7, windup: 0.2, cd: 0.6, uses: 8, carry: 0.82, weight: 2 },
+  pan: { range: 3.5, cone: -0.08, sweep: true, knock: 8, windup: 0.3, cd: 0.85, uses: 7, carry: 0.74, weight: 3 },
+  lollipop: { range: 3.7, cone: 0.35, knock: 10, windup: 0.38, cd: 1.0, uses: 6, carry: 0.66, weight: 2 },
+  hammer: { spin: 0.65, turns: 2, radius: 3.4, knock: 11, windup: 0.45, cd: 1.7, uses: 4, carry: 0.55, spinSlow: 0.3, weight: 2 },
+  blaster: { ranged: true, cd: 1.3, uses: 3, speed: 22, knock: 7, dizzy: 100, life: 1.0, carry: 0.9, weight: 1 },
   bomb: { bomb: true, cd: 0.3, uses: 1, carry: 0.9, weight: 0 },
   sticky: { bomb: true, sticky: true, cd: 0.3, uses: 1, carry: 0.9, weight: 0 },
 };
@@ -105,18 +135,14 @@ const BOT_NAMES = ['Biscuit', 'Noodle', 'Pickles', 'Mochi', 'Waffles', 'Bean', '
 
 const rooms = new Map();
 
-function makeCode() {
-  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let code;
-  do {
-    code = Array.from({ length: 4 }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
-  } while (rooms.has(code));
-  return code;
+// There is only ever one room; it is created on first join and dropped when the last human leaves.
+function getRoom() {
+  return rooms.get(ROOM_CODE) || createRoom();
 }
 
 function createRoom() {
   const room = {
-    code: makeCode(),
+    code: ROOM_CODE,
     hostId: null,
     players: new Map(),
     phase: 'lobby', // lobby | countdown | playing | roundover
@@ -133,8 +159,8 @@ function createRoom() {
     nextItemId: 1,
     itemT: 0,
     river: null,
-    platforms: [],
-    guards: [],
+    gaps: [],
+    shrinkWarned: false,
     bombT: 0,
     teamSize: 0,
     winnerTeam: -1,
@@ -190,10 +216,25 @@ function addPlayer(room, id, name, animal, isBot = false) {
     prevGrab: false,
     grabLock: false,
     swingWind: 0,
+    spinT: 0,
+    spinHits: null,
+    sweepSide: 1,
     heaveT: 0,
     wakeT: 0,
+    thrownT: 0,
+    hang: false,
+    hangA: 0,
+    climbT: 0,
+    hangUsed: false,
+    kickCd: 0,
+    kickWind: 0,
+    kickT: 0,
+    aim: false,
+    fireQ: 0,
+    fireA: 0,
+    late: room.phase !== 'lobby',
     team: -1,
-    input: { x: 0, z: 0, grab: false, punch: false, jump: false },
+    input: { x: 0, z: 0, grab: false, punch: false, jump: false, kick: false, fire: false, aim: false, ax: 0, az: 1 },
     botT: 0,
   };
   room.players.set(id, p);
@@ -211,9 +252,16 @@ function roomInfo(room) {
     teamSize: room.teamSize,
     obstacles: room.obstacles,
     river: room.river && { pts: room.river.pts, half: RIVER_HALF, bridges: room.river.bridges },
-    platforms: room.platforms,
-    guards: room.guards,
     guardInset: GUARD_INSET,
+    // Launch profiles so the client's aim preview matches the real arcs.
+    arcs: {
+      g: GRAVITY,
+      player: { s: THROW_SPEED, vy: THROW_VY, y: 1.25, off: THROW_OFF, carry: 0.5 },
+      bomb: { s: BOMB_TOSS_SPEED, vy: BOMB_TOSS_VY, y: 1.1, off: 0.9, carry: 0.5 },
+      weapon: { s: WEAPON_TOSS_SPEED, vy: WEAPON_TOSS_VY, y: 1.1, off: 0.9, carry: 0.5 },
+      blaster: { line: WEAPONS.blaster.speed * WEAPONS.blaster.life, y: 1.15 },
+      kick: { line: KICK_RANGE + 1.6, y: 0.15 },
+    },
     players: [...room.players.values()].map((p) => ({
       id: p.id, name: p.name, animal: p.animal, score: p.score, isBot: p.isBot, team: p.team,
     })),
@@ -384,8 +432,9 @@ function explode(room, it) {
       if (h) release(room, h, false);
     }
     const a = d > 0.1 ? Math.atan2(dx, dz) : Math.random() * Math.PI * 2;
-    hitPlayer(room, null, o, Math.sin(a), Math.cos(a), BOMB_KNOCK * (1 - (d / BOMB_RADIUS) * 0.4), 100, o.x, o.y + 1, o.z, it.type);
-    o.vy = 9;
+    const near = 1 - d / BOMB_RADIUS;
+    hitPlayer(room, null, o, Math.sin(a), Math.cos(a), BOMB_KNOCK * (0.6 + near * 0.4), BOMB_DIZZY_MIN + (100 - BOMB_DIZZY_MIN) * near, o.x, o.y + 1, o.z, it.type);
+    o.stunT = Math.max(o.stunT, BOMB_STUN);
   }
   for (const other of room.items) {
     if (other.holder || other.stuckTo) continue;
@@ -396,64 +445,39 @@ function explode(room, it) {
   }
 }
 
-// ---- Floating rock platforms and fenced edges ----
+// ---- Edge fence (open only where the river flows off) ----
 const angDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
-// Angles at which the river crosses the edge (at full size and part-way through shrinking).
-function riverEdgeAngles(room) {
-  const out = [];
-  for (const R of [ISLAND_START, ISLAND_START * 0.6]) {
-    for (const sg of room.river.segs) {
-      const ex = sg.x0 + sg.dx * sg.len, ez = sg.z0 + sg.dz * sg.len;
-      if ((Math.hypot(sg.x0, sg.z0) < R) !== (Math.hypot(ex, ez) < R)) out.push(Math.atan2(ex, ez));
+// Gaps where the river leaves an island of radius R. The river curves, so its exit moves
+// as the island shrinks; the gap is widened when the river crosses the edge at a slant.
+function riverGaps(room, R) {
+  const gaps = [];
+  if (!room.river) return gaps;
+  for (const sg of room.river.segs) {
+    const ex = sg.x0 + sg.dx * sg.len, ez = sg.z0 + sg.dz * sg.len;
+    if (Math.hypot(sg.x0, sg.z0) >= R || Math.hypot(ex, ez) < R) continue;
+    let lo = 0, hi = sg.len;
+    for (let k = 0; k < 14; k++) {
+      const m = (lo + hi) / 2;
+      if (Math.hypot(sg.x0 + sg.dx * m, sg.z0 + sg.dz * m) < R) lo = m; else hi = m;
     }
+    const x = sg.x0 + sg.dx * lo, z = sg.z0 + sg.dz * lo;
+    const cross = Math.max(0.35, (sg.dx * x + sg.dz * z) / R);
+    gaps.push({ c: Math.atan2(x, z), h: Math.min(1.2, (RIVER_HALF + FENCE_GAP_MARGIN) / cross / R) });
   }
-  return out;
+  return gaps;
 }
 
-function makeGuards(room) {
-  const avoid = riverEdgeAngles(room);
-  const guards = [];
-  for (let tries = 0; guards.length < GUARD_COUNT && tries < 600; tries++) {
-    const c = Math.random() * Math.PI * 2;
-    const h = 0.3 + Math.random() * 0.2;
-    if (avoid.some((a) => angDiff(a, c) < h + 0.35)) continue;
-    if (guards.some((g) => angDiff(g.c, c) < g.h + h + 0.45)) continue;
-    guards.push({ c: r2(c), h: r2(h) });
-  }
-  return guards;
-}
+const fenced = (room, a) => !room.gaps.some((g) => angDiff(a, g.c) < g.h);
+const fenceR = (room) => room.islandR - GUARD_INSET;
 
-const inGuard = (room, a) => room.guards.some((g) => angDiff(a, g.c) < g.h);
+const onGround = (room, x, z) => Math.hypot(x, z) <= room.islandR;
 
-function makePlatforms(room) {
-  const avoid = riverEdgeAngles(room);
-  const plats = [];
-  for (let tries = 0; plats.length < PLATFORM_COUNT && tries < 600; tries++) {
-    const a = Math.random() * Math.PI * 2;
-    if (avoid.some((x) => angDiff(x, a) < 0.35)) continue;
-    if (room.guards.some((g) => angDiff(g.c, a) < g.h + 0.15)) continue;
-    if (plats.some((p) => angDiff(p.a, a) < 0.6)) continue;
-    const gap = 1.4 + Math.random() * 0.8;
-    const d = ISLAND_START + gap + PLATFORM_R;
-    plats.push({ a: r2(a), x: r2(Math.sin(a) * d), z: r2(Math.cos(a) * d), r: PLATFORM_R, d: r2(d) });
-  }
-  return plats;
-}
-
-const platformActive = (room, pl) => pl.d - pl.r - room.islandR < PLATFORM_MAX_GAP;
-
-function platformAt(room, x, z) {
-  return room.platforms.find((pl) => platformActive(room, pl) && Math.hypot(x - pl.x, z - pl.z) <= pl.r) || null;
-}
-
-const onGround = (room, x, z) => Math.hypot(x, z) <= room.islandR || !!platformAt(room, x, z);
-
-// Fences push back anything trying to leave through a guarded stretch of the edge.
+// The fence pushes back anything trying to leave through a fenced stretch of the edge.
 function guardPush(room, o, bounce) {
   const d = Math.hypot(o.x, o.z);
-  const lim = room.islandR - GUARD_INSET - 0.6;
-  if (d <= lim || d > room.islandR + 0.4 || !inGuard(room, Math.atan2(o.x, o.z))) return;
+  const lim = fenceR(room) - 0.6;
+  if (d <= lim || d > room.islandR + 0.4 || !fenced(room, Math.atan2(o.x, o.z))) return;
   const nx = o.x / d, nz = o.z / d;
   o.x = nx * lim; o.z = nz * lim;
   const vn = o.vx * nx + o.vz * nz;
@@ -473,7 +497,9 @@ function resetBody(p) {
   p.holdT = 0;
   p.weapon = null;
   p.grabLock = false;
-  p.swingWind = p.heaveT = p.wakeT = 0;
+  p.swingWind = p.spinT = p.heaveT = p.wakeT = 0;
+  p.thrownT = p.climbT = p.kickCd = p.kickWind = p.kickT = p.fireQ = 0;
+  p.hang = p.hangUsed = p.aim = false;
 }
 
 function startRound(room) {
@@ -484,8 +510,8 @@ function startRound(room) {
   room.winnerTeam = -1;
   room.roundPlayers = list.length;
   room.river = makeRiver();
-  room.guards = makeGuards(room);
-  room.platforms = makePlatforms(room);
+  room.gaps = riverGaps(room, room.islandR);
+  room.shrinkWarned = false;
   room.obstacles = makeObstacles(room);
   room.items = [];
   room.shots = [];
@@ -503,13 +529,15 @@ function startRound(room) {
     p.face = a + Math.PI;
     resetBody(p);
     p.state = 'alive';
+    p.late = false;
   });
   setPhase(room, 'countdown');
 }
 
 const isActive = (p) => p.state === 'alive';
-const canAct = (p) => isActive(p) && !p.falling && p.koT <= 0 && p.stunT <= 0 && !p.heldBy;
+const canAct = (p) => isActive(p) && !p.falling && !p.hang && p.koT <= 0 && p.stunT <= 0 && !p.heldBy;
 
+// A grab-and-throw is the only launch the fence lets through (thrownT).
 function release(room, holder, thrown) {
   const t = room.players.get(holder.holding);
   holder.holding = null;
@@ -518,11 +546,16 @@ function release(room, holder, thrown) {
   t.heldBy = null;
   t.holdT = 0;
   if (thrown) {
+    // Launch from in front of the thrower, even if the aim snapped round since they were carried.
+    t.x = holder.x + Math.sin(holder.face) * THROW_OFF;
+    t.z = holder.z + Math.cos(holder.face) * THROW_OFF;
     t.vx = Math.sin(holder.face) * THROW_SPEED + holder.vx * 0.5;
     t.vz = Math.cos(holder.face) * THROW_SPEED + holder.vz * 0.5;
-    t.vy = 7;
+    t.vy = THROW_VY;
     t.stunT = 0.9;
     t.grounded = false;
+    t.thrownT = THROWN_TIME;
+    t.hangUsed = false;
     room.events.push({ t: 'throw', id: holder.id, target: t.id });
   } else {
     t.vy = 2;
@@ -533,19 +566,32 @@ function release(room, holder, thrown) {
 
 const weaponItem = (room, p) => (p.weapon ? room.items.find((it) => it.id === p.weapon) : null);
 
-// Shared by punches, weapon swings, foam balls and thrown weapons.
+// Shared by punches, kicks, weapon swings, foam balls, thrown weapons and bombs.
+// Knockback never carries anyone over the fence; only hanging players get knocked off it.
 function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz, w = '') {
+  if (o.hang) {
+    letGo(room, o, fx, fz);
+    room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: true, a: attackerId, b: o.id, w });
+    return;
+  }
   const knock = knockBase * (1 + o.dizzy / 120) * (o.koT > 0 ? 1.4 : 1);
   o.vx += fx * knock;
   o.vz += fz * knock;
   o.vy = Math.max(o.vy, 3 + knockBase * 0.12);
   o.grounded = false;
   o.stunT = Math.max(o.stunT, 0.35);
-  o.swingWind = 0;
+  o.swingWind = o.spinT = o.kickWind = 0;
+  if (Math.hypot(o.x, o.z) < fenceR(room)) o.thrownT = 0;
   if (o.holding) release(room, o, false);
 
   let ko = false;
-  if (o.koT <= 0) {
+  if (WEAPONS[w]?.wakes && (o.dizzy > 0 || o.koT > 0)) {
+    // Spamming the bat wakes a dazed target up: grab them instead.
+    o.dizzy = 0;
+    o.koT = 0;
+    o.wakeT = WAKE_GRACE;
+    room.events.push({ t: 'wake', id: o.id });
+  } else if (o.koT <= 0) {
     // Just-woken players get a moment of grace so they can't be stun-locked.
     o.dizzy += dizzyAdd >= 100 && o.wakeT > 0 ? 50 : dizzyAdd;
     if (o.dizzy >= 100) {
@@ -559,21 +605,46 @@ function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz,
   room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: ko || knockBase > 12, a: attackerId, b: o.id, w });
 }
 
-function meleeHits(room, p, range, cone, knock, dizzy, w = '') {
+// Forward cone hit. sweep (+1/-1) is the side a sideways swing starts from: targets get
+// shoved across, toward the other side, instead of straight ahead.
+function meleeHits(room, p, range, cone, knock, dizzy, w = '', sweep = 0) {
   const fx = Math.sin(p.face), fz = Math.cos(p.face);
+  let kx = fx, kz = fz;
+  if (sweep) {
+    kx = fx * 0.45 - sweep * Math.cos(p.face);
+    kz = fz * 0.45 + sweep * Math.sin(p.face);
+    const kl = Math.hypot(kx, kz);
+    kx /= kl; kz /= kl;
+  }
   for (const o of room.players.values()) {
     if (o === p || !isActive(o) || o.falling || o.heldBy) continue;
     const dx = o.x - p.x, dz = o.z - p.z;
     const dist = Math.hypot(dx, dz);
     if (dist > range || Math.abs(o.y - p.y) > 1.4) continue;
     if (dist > 0.01 && (dx * fx + dz * fz) / dist < cone) continue;
-    hitPlayer(room, p.id, o, fx, fz, knock, dizzy, p.x + fx * 1.1, p.y + 1.1, p.z + fz * 1.1, w);
+    const hx = sweep ? (p.x + o.x) / 2 : p.x + fx * 1.1, hz = sweep ? (p.z + o.z) / 2 : p.z + fz * 1.1;
+    hitPlayer(room, p.id, o, kx, kz, knock, dizzy, hx, p.y + 1.1, hz, w);
+  }
+}
+
+// Hammer spin: everyone in the radius, each at most once per spin, knocked straight outward.
+function spinHits(room, p, w) {
+  for (const o of room.players.values()) {
+    if (o === p || !isActive(o) || o.falling || o.heldBy || p.spinHits.has(o.id)) continue;
+    const dx = o.x - p.x, dz = o.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > w.radius || Math.abs(o.y - p.y) > 1.4) continue;
+    p.spinHits.add(o.id);
+    const a = dist > 0.01 ? Math.atan2(dx, dz) : p.face;
+    hitPlayer(room, p.id, o, Math.sin(a), Math.cos(a), w.knock, w.dizzy ?? 100, (p.x + o.x) / 2, p.y + 1.1, (p.z + o.z) / 2, 'hammer');
   }
 }
 
 // Snap facing toward the best target roughly in front, so attacks are easy to land on phones.
 // Enemies are preferred; teammates are only auto-aimed at when no enemy is close.
+// Aiming players pick their own direction, so there is no assist.
 function aimAssist(room, p, range, minDot) {
+  if (p.aim || p.fireQ > 0) return;
   const fx = Math.sin(p.face), fz = Math.cos(p.face);
   let best = null, bestScore = Infinity;
   for (const o of room.players.values()) {
@@ -621,7 +692,12 @@ function weaponAttack(room, p) {
     room.events.push({ t: 'shoot', id: p.id });
     useUp(room, p, it);
   } else {
-    aimAssist(room, p, w.range + 1, 0.1);
+    if (!w.spin) aimAssist(room, p, w.range + 1, w.sweep ? -0.2 : 0.1);
+    if (w.sweep) {
+      // The pan sweeps from the side it's held on, then switches sides for the next swing.
+      p.sweepSide = p.punchArm ? 1 : -1;
+      p.punchArm = 1 - p.punchArm;
+    }
     p.swingWind = w.windup;
     room.events.push({ t: 'windup', id: p.id, w: it.type });
   }
@@ -631,12 +707,164 @@ function weaponStrike(room, p) {
   const it = weaponItem(room, p);
   if (!it) return;
   const w = WEAPONS[it.type];
-  aimAssist(room, p, w.range + 0.6, 0.1);
+  if (w.spin) {
+    p.spinT = w.spin;
+    p.spinHits = new Set();
+    room.events.push({ t: 'spin', id: p.id, w: it.type });
+    spinHits(room, p, w);
+    return;
+  }
+  if (!w.sweep) {
+    aimAssist(room, p, w.range + 0.6, 0.1);
+    p.punchArm = 1 - p.punchArm;
+  }
   p.punchT = 0.35;
-  p.punchArm = 1 - p.punchArm;
-  room.events.push({ t: 'swing', id: p.id, w: it.type });
-  meleeHits(room, p, w.range, w.cone, w.knock, 100, it.type);
+  room.events.push({ t: 'swing', id: p.id, w: it.type, sd: w.sweep ? p.sweepSide : 0 });
+  meleeHits(room, p, w.range, w.cone, w.knock, w.dizzy ?? 100, it.type, w.sweep ? p.sweepSide : 0);
   useUp(room, p, it);
+}
+
+function stepSpin(room, p, dt) {
+  const it = weaponItem(room, p);
+  if (!canAct(p) || !it) { p.spinT = 0; return; }
+  p.spinT -= dt;
+  spinHits(room, p, WEAPONS[it.type]);
+  if (p.spinT <= 0) {
+    p.spinT = 0;
+    useUp(room, p, it);
+  }
+}
+
+// ---- Kicks ----
+function startKick(room, p) {
+  if (!p.aim) {
+    // Prefer an enemy in front; otherwise line up on a bomb lying close by.
+    const before = p.face;
+    aimAssist(room, p, KICK_RANGE + 0.4, 0.3);
+    if (p.face === before) {
+      const b = kickableBomb(room, p, -0.2);
+      if (b) p.face = Math.atan2(b.x - p.x, b.z - p.z);
+    }
+  }
+  p.kickCd = KICK_COOLDOWN;
+  p.kickWind = KICK_STARTUP;
+  p.kickT = 0.35;
+  room.events.push({ t: 'kick', id: p.id });
+}
+
+function kickableBomb(room, p, minDot) {
+  const fx = Math.sin(p.face), fz = Math.cos(p.face);
+  let best = null, bestD = KICK_BOMB_RANGE;
+  for (const it of room.items) {
+    if (!isBomb(it) || it.holder || it.stuckTo || it.y > 0.8 || it.y < -0.3) continue;
+    const dx = it.x - p.x, dz = it.z - p.z, d = Math.hypot(dx, dz);
+    if (d > bestD || (d > 0.3 && (dx * fx + dz * fz) / d < minDot)) continue;
+    bestD = d; best = it;
+  }
+  return best;
+}
+
+function kickStrike(room, p) {
+  const fx = Math.sin(p.face), fz = Math.cos(p.face);
+  const b = kickableBomb(room, p, 0.2);
+  if (b) {
+    // Booted along the ground; kicking an unlit bomb lights it.
+    b.grounded = true;
+    b.skid = true;
+    b.kicked = true;
+    b.y = 0;
+    b.vx = fx * KICK_BOMB_SPEED + p.vx * 0.3;
+    b.vz = fz * KICK_BOMB_SPEED + p.vz * 0.3;
+    b.vy = 0;
+    b.rot = r2(p.face);
+    b.thrownBy = p.id;
+    if (b.fuse == null) b.fuse = BOMB_FUSE;
+    room.events.push({ t: 'kickBomb', id: p.id, x: r2(b.x), z: r2(b.z) });
+  }
+  meleeHits(room, p, KICK_RANGE, 0.4, KICK_KNOCK, KICK_DIZZY, 'kick');
+}
+
+// ---- Hanging on the fence ----
+// Thrown players dropping just past the fence catch the rail (holding GRAB reaches further).
+// Knocked-out players are out cold and can't, so a knockout and a throw finishes someone.
+function tryHang(room, p, reaching) {
+  if (p.thrownT <= 0 || p.thrownT > THROWN_TIME - 0.12 || p.hangUsed || p.grounded || p.koT > 0) return;
+  const d = Math.hypot(p.x, p.z);
+  const out = d - fenceR(room);
+  if (out < 0.3 || out > (reaching ? HANG_REACH_GRAB : HANG_REACH) || p.y > HANG_MAX_Y || p.y < -0.6) return;
+  const a = Math.atan2(p.x, p.z);
+  if (!fenced(room, a)) return;
+  p.hang = true;
+  p.hangUsed = true;
+  p.hangA = a;
+  p.climbT = 0;
+  p.stunT = 0;
+  if (p.holding) release(room, p, false);
+  dropWeapon(room, p, false);
+  placeHanging(room, p);
+  room.events.push({ t: 'hang', id: p.id });
+}
+
+function placeHanging(room, p) {
+  const r = room.islandR + HANG_OUT;
+  p.x = Math.sin(p.hangA) * r;
+  p.z = Math.cos(p.hangA) * r;
+  p.y = HANG_Y + (p.climbT / HANG_CLIMB) * 0.5;
+  p.vx = p.vy = p.vz = 0;
+  p.face = p.hangA + Math.PI;
+  p.grounded = false;
+}
+
+function stepHang(room, p, dt, mash) {
+  if (!fenced(room, p.hangA)) return letGo(room, p, 0, 0);
+  p.climbT += dt + (mash ? HANG_MASH : 0);
+  if (p.climbT < HANG_CLIMB) return placeHanging(room, p);
+  // Over the top and back inside.
+  const r = fenceR(room) - 0.9;
+  p.hang = false;
+  p.climbT = 0;
+  p.thrownT = 0;
+  p.x = Math.sin(p.hangA) * r;
+  p.z = Math.cos(p.hangA) * r;
+  p.y = 0.3;
+  p.vx = -Math.sin(p.hangA) * 2;
+  p.vz = -Math.cos(p.hangA) * 2;
+  p.vy = 5;
+  p.wakeT = WAKE_GRACE;
+  room.events.push({ t: 'climb', id: p.id });
+}
+
+// Knocked off the rail: gone for good (no second grab, and the fence won't catch them).
+function letGo(room, p, fx, fz) {
+  p.hang = false;
+  p.climbT = 0;
+  p.hangUsed = true;
+  p.thrownT = THROWN_TIME;
+  p.vx = Math.sin(p.hangA) * 3 + fx * 3;
+  p.vz = Math.cos(p.hangA) * 3 + fz * 3;
+  p.vy = -1;
+  p.y = Math.min(p.y, -0.7);
+  p.grounded = false;
+  room.events.push({ t: 'letgo', id: p.id });
+}
+
+// ---- THROW button: release in the aimed direction ----
+function aimedRelease(room, p) {
+  if (p.holding) { release(room, p, true); return true; }
+  const it = weaponItem(room, p);
+  if (!it || p.heaveT > 0) return !it;
+  const w = WEAPONS[it.type];
+  if (w.ranged) {
+    if (p.punchCd > 0) return false;
+    weaponAttack(room, p);
+  } else {
+    // Bombs are lobbed, melee weapons flung.
+    dropWeapon(room, p, true);
+    p.punchCd = Math.max(p.punchCd, 0.3);
+    p.punchT = 0.25;
+    p.punchArm = 1 - p.punchArm;
+  }
+  return true;
 }
 
 function useUp(room, p, it) {
@@ -700,10 +928,11 @@ function dropWeapon(room, p, toss) {
   it.z = p.z + fz * 0.9;
   it.y = p.y + 1.1;
   // Bombs are lobbed in an arc; weapons are flung flat and fast.
-  const speed = isBomb(it) ? 12 : 15;
+  const speed = isBomb(it) ? BOMB_TOSS_SPEED : WEAPON_TOSS_SPEED;
   it.vx = p.vx * 0.5 + (toss ? fx * speed : 0);
   it.vz = p.vz * 0.5 + (toss ? fz * speed : 0);
-  it.vy = toss ? (isBomb(it) ? 6 : 3.5) : 2;
+  it.vy = toss ? (isBomb(it) ? BOMB_TOSS_VY : WEAPON_TOSS_VY) : 2;
+  it.skid = it.kicked = false;
   it.thrownBy = toss ? p.id : null;
   if (toss) room.events.push({ t: 'toss', id: p.id });
 }
@@ -731,6 +960,13 @@ function stepItems(room, dt) {
       it.x += it.vx * dt;
       it.y += it.vy * dt;
       it.z += it.vz * dt;
+    } else if (it.skid) {
+      // Kicked bombs skid along the ground until friction stops them.
+      it.x += it.vx * dt;
+      it.z += it.vz * dt;
+      const f = Math.exp(-SKID_FRICTION * dt);
+      it.vx *= f; it.vz *= f;
+      if (Math.hypot(it.vx, it.vz) < 1.5) { it.skid = false; it.thrownBy = null; }
     } else {
       const rv = riverAt(room, it.x, it.z);
       if (rv) { it.x += rv.tx * RIVER_FLOW * 0.45 * dt; it.z += rv.tz * RIVER_FLOW * 0.45 * dt; }
@@ -739,12 +975,13 @@ function stepItems(room, dt) {
     if (onIsland && it.y <= 0 && it.y > -0.5) {
       if (!it.grounded) room.events.push({ t: 'itemLand', x: r2(it.x), z: r2(it.z), w: it.type });
       it.y = 0;
-      it.vx = it.vy = it.vz = 0;
+      it.vy = 0;
+      if (!it.skid) { it.vx = it.vz = 0; it.thrownBy = null; }
       it.grounded = true;
-      it.thrownBy = null;
       if (it.type === 'bomb' && it.fuse == null) it.fuse = BOMB_FUSE;
     } else if (!onIsland) {
       it.grounded = false;
+      it.skid = false;
     }
     if (it.y < 1) guardPush(room, it, 1.3);
     for (const o of room.obstacles) {
@@ -769,9 +1006,13 @@ function stepItems(room, dt) {
           room.events.push({ t: 'stick', id: o.id, x: r2(it.x), y: r2(it.y), z: r2(it.z) });
         } else {
           const bomb = it.type === 'bomb';
-          hitPlayer(room, it.thrownBy, o, it.vx / sp, it.vz / sp, bomb ? 5 : 9, bomb ? 25 : it.type === 'blaster' ? 40 : 100, it.x, it.y, it.z, it.type);
+          hitPlayer(room, it.thrownBy, o, it.vx / sp, it.vz / sp, bomb ? 5 : 9, bomb ? 25 : it.type === 'blaster' ? 40 : WEAPONS[it.type].dizzy ?? 100, it.x, it.y, it.z, it.type);
+          // A kicked lit bomb goes off right on whoever it runs into.
+          if (bomb && it.kicked && it.fuse != null) it.fuse = Math.min(it.fuse, 0.12);
           it.vx *= -0.25; it.vz *= -0.25; it.vy = 3;
+          it.grounded = false;
         }
+        it.skid = it.kicked = false;
         it.thrownBy = null;
         break;
       }
@@ -831,39 +1072,73 @@ function tryGrab(room, p) {
   room.events.push({ t: 'grab', id: p.id, target: best.id });
 }
 
+// Bots aim straight at whatever they want to hit.
+function botAim(inp, dx, dz) {
+  const l = Math.hypot(dx, dz) || 1;
+  inp.aim = true;
+  inp.ax = dx / l;
+  inp.az = dz / l;
+}
+
+function enemiesNear(room, bot, r) {
+  return [...room.players.values()].filter((o) => o !== bot && isActive(o) && !o.falling && !o.heldBy && !sameTeam(bot, o)
+    && Math.hypot(o.x - bot.x, o.z - bot.z) < r);
+}
+
 function botThink(room, bot, dt) {
   bot.botT -= dt;
   if (bot.botT > 0) return;
   bot.botT = 0.18 + Math.random() * 0.15;
   const inp = bot.input;
-  inp.punch = false;
-  inp.jump = false;
+  inp.punch = inp.jump = inp.kick = inp.fire = inp.aim = false;
 
   if (bot.heldBy) {
     inp.punch = Math.random() < 0.35;
     return;
   }
+  // On the fence: mash to climb back in.
+  if (bot.hang) {
+    inp.jump = Math.random() < 0.7;
+    return;
+  }
+  // Flying out after a throw: usually reach for the fence.
+  if (bot.thrownT > 0 && !bot.grounded) {
+    bot.botReach ??= Math.random() < 0.7;
+    inp.grab = bot.botReach;
+    return;
+  }
+  bot.botReach = undefined;
 
   const distC = Math.hypot(bot.x, bot.z) || 0.001;
   const R = room.islandR;
 
   if (bot.holding) {
-    // Carry the victim to the nearest edge, then toss.
+    // Carry the victim to the fence (or the river gap) and throw them over.
     inp.x = bot.x / distC;
     inp.z = bot.z / distC;
     inp.grab = true;
-    if (distC > R - 2.4) inp.punch = true;
+    if (distC > fenceR(room) - 1.9) {
+      botAim(inp, bot.x, bot.z);
+      inp.fire = true;
+    }
     return;
   }
 
-  // Stranded on a floating rock: run at the main island and hop the gap.
-  const pl = distC > R ? platformAt(room, bot.x, bot.z) : null;
-  if (pl) {
-    inp.x = -bot.x / distC;
-    inp.z = -bot.z / distC;
+  // Knock climbing enemies off the fence before they make it back in.
+  let hanger = null;
+  for (const o of room.players.values()) {
+    if (o.hang && !sameTeam(bot, o) && Math.hypot(o.x - bot.x, o.z - bot.z) < 9) hanger = o;
+  }
+  if (hanger) {
+    const dx = hanger.x - bot.x, dz = hanger.z - bot.z, d = Math.hypot(dx, dz) || 1;
+    inp.x = dx / d;
+    inp.z = dz / d;
     inp.grab = false;
-    if (distC < pl.d - pl.r + 1) inp.jump = true;
-    if (bot.weapon) inp.punch = true;
+    if (d < 2.1) {
+      botAim(inp, dx, dz);
+      if (bot.kickCd <= 0) inp.kick = true;
+      else inp.punch = true;
+    }
     return;
   }
 
@@ -887,6 +1162,35 @@ function botThink(room, bot, dt) {
     return;
   }
 
+  let target = null, best = Infinity;
+  for (const o of room.players.values()) {
+    if (o === bot || !isActive(o) || o.falling || o.heldBy === bot.id || sameTeam(bot, o)) continue;
+    const d = Math.hypot(o.x - bot.x, o.z - bot.z);
+    if (d < best) { best = d; target = o; }
+  }
+
+  // Boot a bomb lying nearby at the target: get behind it, then kick.
+  if (target && !bot.weapon && bot.kickCd <= 0) {
+    for (const b of room.items) {
+      if (!isBomb(b) || b.holder || b.stuckTo || !b.grounded || b.skid || (b.fuse != null && b.fuse < 1.4)) continue;
+      if (Math.hypot(b.x - bot.x, b.z - bot.z) > 5) continue;
+      const tx = target.x - b.x, tz = target.z - b.z, td = Math.hypot(tx, tz) || 1;
+      if (td > 13) continue;
+      const gx = b.x - (tx / td) * 1.2, gz = b.z - (tz / td) * 1.2;
+      const gd = Math.hypot(gx - bot.x, gz - bot.z);
+      inp.grab = false;
+      if (gd < 0.8) {
+        botAim(inp, tx, tz);
+        inp.kick = true;
+        inp.x = inp.z = 0;
+      } else {
+        inp.x = (gx - bot.x) / gd;
+        inp.z = (gz - bot.z) / gd;
+      }
+      return;
+    }
+  }
+
   // Run from bombs about to go off (unless already holding one to throw).
   for (const b of room.items) {
     if (b.fuse == null || b.fuse > 2.2 || b.holder === bot.id || b.stuckTo === bot.id) continue;
@@ -897,13 +1201,6 @@ function botThink(room, bot, dt) {
       inp.grab = false;
       return;
     }
-  }
-
-  let target = null, best = Infinity;
-  for (const o of room.players.values()) {
-    if (o === bot || !isActive(o) || o.falling || o.heldBy === bot.id || sameTeam(bot, o)) continue;
-    const d = Math.hypot(o.x - bot.x, o.z - bot.z);
-    if (d < best) { best = d; target = o; }
   }
 
   if (!bot.weapon) {
@@ -935,20 +1232,42 @@ function botThink(room, bot, dt) {
     const w = WEAPONS[held.type];
     inp.grab = false;
     const facing = (dx * Math.sin(bot.face) + dz * Math.cos(bot.face)) / len;
+    const dazed = target.koT > 0 || (w.wakes && target.dizzy > 0);
+    if (!w.bomb && dazed && best < 2.6) {
+      // Hitting again would waste the knockout (or wake them, with the bat): drop it and grab.
+      dropWeapon(room, bot, false);
+      return;
+    }
     if (w.bomb) {
-      if ((best < 8 && facing > 0.8) || (held.fuse != null && held.fuse < 1.2)) inp.punch = true;
+      if ((best < 9 && facing > 0.6) || (held.fuse != null && held.fuse < 1.2)) { botAim(inp, dx, dz); inp.fire = true; }
     } else if (w.ranged) {
       if (best < 6) { inp.x *= 0.2; inp.z *= 0.2; }
-      if (best < 11 && facing > 0.9 && Math.random() < 0.4) inp.punch = true;
-    } else if (best < w.range - 0.3 && facing > 0.6 && Math.random() < 0.45) {
+      if (best < 12 && bot.punchCd <= 0 && Math.random() < 0.4) { botAim(inp, dx, dz); inp.fire = true; }
+    } else if (w.spin) {
+      const n = enemiesNear(room, bot, w.radius - 0.4).length;
+      if (n >= 2 || (n === 1 && Math.random() < 0.25)) inp.punch = true;
+    } else if (w.sweep) {
+      // The pan covers a half-circle, so enemies beside count too.
+      const fx = Math.sin(bot.face), fz = Math.cos(bot.face);
+      const beside = enemiesNear(room, bot, w.range - 0.3).some((o) => {
+        const ox = o.x - bot.x, oz = o.z - bot.z;
+        return (ox * fx + oz * fz) / (Math.hypot(ox, oz) || 1) > -0.1;
+      });
+      if (beside && Math.random() < 0.5) inp.punch = true;
+    } else if (!dazed && best < w.range - 0.3 && facing > 0.6 && Math.random() < 0.45) {
       inp.punch = true;
     }
     return;
   }
 
   if (best < 1.9) {
-    if ((target.koT > 0 && Math.random() < 0.5) || Math.random() < 0.05) inp.grab = true;
+    // Kick enemies standing between us and the river.
+    const rvNow = riverDist(room, target.x, target.z);
+    const towardRiver = rvNow < RIVER_HALF + 3 && riverDist(room, target.x + (dx / len) * 2, target.z + (dz / len) * 2) < rvNow;
+    if (towardRiver && bot.kickCd <= 0) { botAim(inp, dx, dz); inp.kick = true; }
+    else if (((target.koT > 0 || target.dizzy > 60) && Math.random() < 0.5) || Math.random() < 0.05) inp.grab = true;
     else if (Math.random() < 0.3) inp.punch = true;
+    else if (bot.kickCd <= 0 && Math.random() < 0.1) inp.kick = true;
   } else {
     inp.grab = false;
   }
@@ -967,6 +1286,10 @@ function stepPhysics(room, dt) {
     p.punchCd = Math.max(0, p.punchCd - dt);
     p.punchT = Math.max(0, p.punchT - dt);
     p.grabCd = Math.max(0, p.grabCd - dt);
+    p.kickCd = Math.max(0, p.kickCd - dt);
+    p.kickT = Math.max(0, p.kickT - dt);
+    p.thrownT = Math.max(0, p.thrownT - dt);
+    p.fireQ = Math.max(0, p.fireQ - dt);
     if (p.koT <= 0) p.dizzy = Math.max(0, p.dizzy - DIZZY_DECAY * dt);
 
     if (p.isBot && room.phase === 'playing') botThink(room, p, dt);
@@ -974,10 +1297,23 @@ function stepPhysics(room, dt) {
     const grabPressed = inp.grab && !p.prevGrab;
     p.prevGrab = inp.grab;
     if (!inp.grab) p.grabLock = false;
+    p.aim = inp.aim;
+    if (inp.fire) {
+      p.fireQ = FIRE_BUFFER;
+      p.fireA = Math.atan2(inp.ax, inp.az);
+      inp.fire = false;
+    }
 
     if (p.heldBy) {
       if (inp.punch || inp.jump) p.holdT += 0.3;
-      inp.punch = inp.jump = false;
+      inp.punch = inp.jump = inp.kick = false;
+      p.fireQ = 0;
+      continue;
+    }
+    if (p.hang) {
+      stepHang(room, p, dt, inp.jump || grabPressed);
+      inp.punch = inp.jump = inp.kick = false;
+      p.fireQ = 0;
       continue;
     }
 
@@ -986,6 +1322,14 @@ function stepPhysics(room, dt) {
       else {
         p.swingWind -= dt;
         if (p.swingWind <= 0) { p.swingWind = 0; weaponStrike(room, p); }
+      }
+    }
+    if (p.spinT > 0) stepSpin(room, p, dt);
+    if (p.kickWind > 0) {
+      if (!canAct(p)) p.kickWind = 0;
+      else {
+        p.kickWind -= dt;
+        if (p.kickWind <= 0) { p.kickWind = 0; kickStrike(room, p); }
       }
     }
 
@@ -999,16 +1343,21 @@ function stepPhysics(room, dt) {
       let ix = inp.x, iz = inp.z;
       const il = Math.hypot(ix, iz);
       if (il > 1) { ix /= il; iz /= il; }
-      if (il > 0.15) {
-        const target = Math.atan2(ix, iz);
+      // Aiming faces the aim while the stick keeps strafing; otherwise face the way we move.
+      const aimed = p.fireQ > 0 || (p.aim && Math.hypot(inp.ax, inp.az) > 0.1);
+      if (p.fireQ > 0) p.face = p.fireA;
+      else if (aimed || il > 0.15) {
+        const target = aimed ? Math.atan2(inp.ax, inp.az) : Math.atan2(ix, iz);
         let diff = target - p.face;
         diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-        p.face += diff * Math.min(1, dt * 14);
+        p.face += diff * Math.min(1, dt * (aimed ? AIM_TURN : 14));
       }
       const held = weaponItem(room, p);
       let speed = p.holding ? CARRY_SPEED : MOVE_SPEED;
       if (held) speed *= WEAPONS[held.type].carry;
       if (p.swingWind > 0 || p.punchT > 0 && held) speed *= 0.25;
+      if (p.spinT > 0 && held) speed *= WEAPONS[held.type].spinSlow;
+      if (p.kickWind > 0 || p.kickT > 0) speed *= 0.5;
       if (p.heaveT > 0) speed *= 0.1;
       if (rv) speed *= RIVER_WADE;
       const accel = (p.grounded ? GROUND_ACCEL : AIR_ACCEL) * (rv ? 0.5 : 1);
@@ -1020,10 +1369,12 @@ function stepPhysics(room, dt) {
         p.grounded = false;
         room.events.push({ t: 'jump', id: p.id });
       }
+      if (p.fireQ > 0 && aimedRelease(room, p)) p.fireQ = 0;
       if (inp.punch) {
         if (p.holding) release(room, p, true);
-        else if (p.punchCd <= 0 && p.heaveT <= 0) (p.weapon ? weaponAttack : doPunch)(room, p);
+        else if (p.punchCd <= 0 && p.heaveT <= 0 && p.spinT <= 0) (p.weapon ? weaponAttack : doPunch)(room, p);
       }
+      if (inp.kick && p.kickCd <= 0 && p.heaveT <= 0 && !p.holding && p.swingWind <= 0 && p.spinT <= 0) startKick(room, p);
       if (grabPressed && p.weapon) {
         dropWeapon(room, p, true);
         p.grabLock = true;
@@ -1043,6 +1394,7 @@ function stepPhysics(room, dt) {
     }
     inp.punch = false;
     inp.jump = false;
+    inp.kick = false;
 
     p.vx += flowX; p.vz += flowZ;
 
@@ -1057,6 +1409,8 @@ function stepPhysics(room, dt) {
       p.y = 0;
       p.vy = 0;
       p.grounded = true;
+      p.thrownT = 0;
+      p.hangUsed = false;
     } else {
       p.grounded = false;
     }
@@ -1074,9 +1428,11 @@ function stepPhysics(room, dt) {
         if (vn < 0) { p.vx -= vn * nx * 1.3; p.vz -= vn * nz * 1.3; }
       }
     }
-    if (!p.heldBy && !p.falling && p.y < 1.1) guardPush(room, p, 1.3);
+    // Whatever the height, only thrown players get past the fence.
+    if (!p.heldBy && !p.falling && p.thrownT <= 0) guardPush(room, p, 1.3);
+    if (!p.falling) tryHang(room, p, inp.grab);
 
-    if (!p.falling && p.y < -0.6) {
+    if (!p.falling && !p.hang && p.y < -0.6) {
       p.falling = true;
       dropWeapon(room, p, false);
       if (p.holding) release(room, p, false);
@@ -1101,7 +1457,7 @@ function stepPhysics(room, dt) {
   }
 
   // Soft body-to-body pushing.
-  const solid = list.filter((p) => !p.heldBy && !p.falling);
+  const solid = list.filter((p) => !p.heldBy && !p.falling && !p.hang);
   for (let i = 0; i < solid.length; i++) {
     for (let j = i + 1; j < solid.length; j++) {
       const a = solid[i], b = solid[j];
@@ -1137,6 +1493,11 @@ function tickRoom(room, dt) {
     room.roundTime += dt;
     const t = Math.min(1, Math.max(0, (room.roundTime - SHRINK_DELAY) / SHRINK_DURATION));
     room.islandR = ISLAND_START + (ISLAND_MIN - ISLAND_START) * t;
+    if (t > 0) room.gaps = riverGaps(room, room.islandR);
+    if (!room.shrinkWarned && room.roundTime >= SHRINK_DELAY - SHRINK_WARN) {
+      room.shrinkWarned = true;
+      room.events.push({ t: 'shrinkWarn' });
+    }
     stepPhysics(room, dt);
     stepItems(room, dt);
     stepBombSpawns(room, dt);
@@ -1186,6 +1547,8 @@ function snapshot(room) {
     countdown: COUNTDOWN,
     islandR: r2(room.islandR),
     islandMax: ISLAND_START,
+    shrinkIn: r2(SHRINK_DELAY - room.roundTime),
+    gaps: room.gaps.map((g) => [r2(g.c), r2(g.h)]),
     players: [...room.players.values()].map((p) => ({
       id: p.id,
       x: r2(p.x), y: r2(p.y), z: r2(p.z),
@@ -1201,14 +1564,18 @@ function snapshot(room) {
       hb: p.heldBy || '',
       dz: Math.round(p.dizzy),
       w: weaponItem(room, p)?.type || '',
-      sw: p.swingWind > 0 ? 1 : p.punchT > 0 && p.weapon ? 2 : 0,
+      sw: p.swingWind > 0 ? 1 : p.spinT > 0 ? 3 : p.punchT > 0 && p.weapon ? 2 : 0,
+      sd: p.sweepSide,
+      kk: p.kickT > 0 ? 1 : 0,
+      am: p.aim ? 1 : 0,
+      hg: p.hang ? Math.max(0.01, r2(p.climbT / HANG_CLIMB)) : 0,
+      lt: p.late ? 1 : 0,
       tm: p.team,
       rv: p.inRiver ? 1 : 0,
       wf: fuseOf(weaponItem(room, p)),
     })),
-    plat: room.platforms.map((pl) => (platformActive(room, pl) ? 1 : 0)),
     items: room.items.filter((it) => !it.holder).map((it) => ({
-      i: it.id, t: it.type, x: r2(it.x), y: r2(it.y), z: r2(it.z), r: it.rot || 0, f: fuseOf(it), k: it.stuckTo || '',
+      i: it.id, t: it.type, x: r2(it.x), y: r2(it.y), z: r2(it.z), r: it.rot || 0, f: fuseOf(it), k: it.stuckTo || '', s: it.skid ? 1 : 0,
     })),
     shots: room.shots.map((s) => ({ i: s.id, x: r2(s.x), y: r2(s.y), z: r2(s.z), vx: r2(s.vx), vz: r2(s.vz) })),
     events: room.events.splice(0),
@@ -1242,16 +1609,16 @@ io.on('connection', (socket) => {
     broadcastRoom(r);
   }
 
+  // Create and join both land in the single room.
   socket.on('create', ({ name, animal } = {}) => {
     if (room) return;
-    join(createRoom(), name, animal);
+    join(getRoom(), name, animal);
   });
 
   socket.on('join', ({ code, name, animal } = {}) => {
     if (room) return;
-    const r = rooms.get(String(code || '').toUpperCase().trim());
-    if (!r) return socket.emit('errorMsg', 'Room not found');
-    join(r, name, animal);
+    if (code && String(code).toLowerCase().trim() !== ROOM_CODE) return socket.emit('errorMsg', 'Room not found');
+    join(getRoom(), name, animal);
   });
 
   socket.on('setAnimal', (animal) => {
@@ -1267,9 +1634,14 @@ io.on('connection', (socket) => {
     p.input.x = Math.max(-1, Math.min(1, Number(inp.x) || 0));
     p.input.z = Math.max(-1, Math.min(1, Number(inp.z) || 0));
     p.input.grab = !!inp.grab;
+    p.input.aim = !!inp.aim;
+    const ax = Number(inp.ax) || 0, az = Number(inp.az) || 0, al = Math.hypot(ax, az);
+    if (al > 0.01) { p.input.ax = ax / al; p.input.az = az / al; }
     if (room.phase === 'playing') {
       if (inp.punch) p.input.punch = true;
       if (inp.jump) p.input.jump = true;
+      if (inp.kick) p.input.kick = true;
+      if (inp.fire) p.input.fire = true;
     }
   });
 

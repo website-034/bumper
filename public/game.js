@@ -14,6 +14,7 @@ const $ = (id) => document.getElementById(id);
 const canvas = $('game');
 
 const ISLAND_MAX = 28;
+const ISLAND_MIN = 6;
 const BOMB_RADIUS = 3.2;
 const TEAM_COLORS = ['#ff6b81', '#4dabf7', '#51cf66', '#ffc93c'];
 const TEAM_NAMES = ['Red', 'Blue', 'Green', 'Yellow'];
@@ -593,78 +594,12 @@ function updateRiver(dt, R) {
   }
 }
 
-// ---------- Floating rock platforms just off the edge ----------
-const platformGroup = new THREE.Group();
-island.add(platformGroup);
-let platformKey = '', platformMeshes = [];
-const platformDirtMat = new THREE.MeshStandardMaterial({ color: '#e6c2a0', roughness: 1 });
-
-function buildPlatform(pl) {
-  const g = new THREE.Group();
-  const top = new THREE.Mesh(new THREE.CylinderGeometry(pl.r, pl.r * 0.97, 0.5, 32), grassMat);
-  top.position.y = -0.25;
-  top.receiveShadow = true;
-  const dirt = new THREE.Mesh(new THREE.CylinderGeometry(pl.r * 0.97, pl.r * 0.85, 0.7, 24), platformDirtMat);
-  dirt.position.y = -0.85;
-  const under = new THREE.Mesh(new THREE.ConeGeometry(pl.r * 0.85, pl.r * 2.2, 9), rock.material);
-  under.rotation.x = Math.PI;
-  under.position.y = -1.2 - pl.r * 1.1;
-  const edge = new THREE.Mesh(new THREE.RingGeometry(pl.r * 0.94, pl.r, 40), edgeRing.material);
-  edge.rotation.x = -Math.PI / 2;
-  edge.position.y = 0.01;
-  g.add(top, dirt, under, edge);
-  for (let i = 0; i < 14; i++) {
-    const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * (pl.r - 0.3);
-    const t = new THREE.Mesh(tufts.geometry, tufts.material);
-    t.position.set(Math.sin(a) * d, 0.1, Math.cos(a) * d);
-    t.scale.setScalar(0.7 + Math.random() * 0.7);
-    g.add(t);
-  }
-  const prop = natureProps[Math.random() < 0.5 ? 'Rock002' : 'Bush001'];
-  if (prop) {
-    // Off to the outer side so the middle stays free to stand on.
-    const p = prop.clone(true);
-    p.position.set(Math.sin(pl.a) * pl.r * 0.65, 0, Math.cos(pl.a) * pl.r * 0.65);
-    g.add(p);
-  }
-  g.position.set(pl.x, 0, pl.z);
-  return g;
-}
-
-function updatePlatforms(dt, R, playing) {
-  platformGroup.visible = playing;
-  if (!playing || !room) return;
-  const list = room.platforms || [];
-  const key = JSON.stringify(list) + Object.keys(natureProps).length;
-  if (key !== platformKey) {
-    platformKey = key;
-    platformGroup.clear();
-    platformMeshes = list.map((pl) => {
-      const g = buildPlatform(pl);
-      platformGroup.add(g);
-      return { g, fallV: 0, spin: (Math.random() - 0.5) * 1.5, bob: Math.random() * 6 };
-    });
-  }
-  const flags = snap?.plat || [];
-  platformMeshes.forEach((m, i) => {
-    if (flags[i] !== 0) {
-      m.g.position.y = 0;
-      m.g.visible = true;
-      return;
-    }
-    m.fallV += 16 * dt;
-    m.g.position.y -= m.fallV * dt;
-    m.g.rotation.z += m.spin * dt;
-    m.g.visible = m.g.position.y > -40;
-  });
-}
-
-// ---------- Picket fences guarding parts of the edge ----------
+// ---------- Picket fence around the whole edge, open where the river spills off ----------
 const FENCE_STEP = 1.1;
 const fencePostGeo = new THREE.CylinderGeometry(0.09, 0.11, 1.0, 8);
 fencePostGeo.translate(0, 0.5, 0);
 const fenceRailGeo = new THREE.BoxGeometry(0.08, 0.1, 1);
-const fenceMaxPosts = 200;
+const fenceMaxPosts = 260;
 const fencePosts = new THREE.InstancedMesh(fencePostGeo, new THREE.MeshStandardMaterial({ color: '#fff3e6', roughness: 0.7 }), fenceMaxPosts);
 const fenceRails = new THREE.InstancedMesh(fenceRailGeo, new THREE.MeshStandardMaterial({ color: '#ffb7c9', roughness: 0.6 }), fenceMaxPosts * 2);
 fencePosts.castShadow = fenceRails.castShadow = true;
@@ -673,18 +608,29 @@ fencePosts.frustumCulled = fenceRails.frustumCulled = false;
 island.add(fencePosts, fenceRails);
 let fenceKey = '';
 
+// Fenced arcs [from, to] between the river gaps ([centre, half-width] pairs from the server).
+function fenceArcs(gaps) {
+  if (!gaps.length) return [[0, Math.PI * 2]];
+  const sorted = [...gaps].sort((a, b) => a[0] - b[0]);
+  return sorted.map(([c, h], i) => {
+    const [nc, nh] = sorted[(i + 1) % sorted.length];
+    const to = nc - nh + (i + 1 === sorted.length ? Math.PI * 2 : 0);
+    return [c + h, to];
+  }).filter(([a, b]) => b - a > 0.02);
+}
+
 function updateGuards(R, playing) {
-  const guards = playing && room ? room.guards || [] : [];
-  const key = JSON.stringify(guards) + R.toFixed(2);
+  const gaps = playing && snap ? snap.gaps || [] : null;
+  const key = JSON.stringify(gaps) + R.toFixed(2);
   if (key === fenceKey) return;
   fenceKey = key;
-  const rr = R - (room?.guardInset ?? 0.5);
+  const rr = R - (room?.guardInset ?? 0.25);
   let np = 0, nr = 0;
-  for (const g of guards) {
-    const n = Math.min(60, Math.ceil((2 * g.h * ISLAND_MAX) / FENCE_STEP) + 1);
+  for (const [a0, a1] of gaps ? fenceArcs(gaps) : []) {
+    const n = Math.max(2, Math.ceil(((a1 - a0) * rr) / FENCE_STEP) + 1);
     let prev = null;
     for (let j = 0; j < n && np < fenceMaxPosts; j++) {
-      const th = g.c - g.h + (2 * g.h * j) / (n - 1);
+      const th = a0 + ((a1 - a0) * j) / (n - 1);
       const x = Math.sin(th) * rr, z = Math.cos(th) * rr;
       decoDummy.position.set(x, 0, z);
       decoDummy.rotation.set(0, th, 0);
@@ -765,9 +711,12 @@ function syncItems(s, dt) {
       const landed = it.y < 0.05;
       p.root.rotation.y = it.r;
       // Tumble while airborne, then settle and bob gently (bombs just sit and fizz).
-      p.holder.rotation.x = landed ? 0 : p.holder.rotation.x + dt * (info.bomb ? 3 : 6);
+      // Kicked bombs skid along the ground, wobbling.
+      p.holder.rotation.x = it.s || landed ? 0 : p.holder.rotation.x + dt * (info.bomb ? 3 : 6);
+      p.holder.rotation.z = it.s ? Math.sin(time * 30) * 0.35 : 0;
       p.holder.position.y = p.baseY + (landed && !info.bomb ? Math.abs(Math.sin(time * 2.5 + it.i)) * 0.08 : 0);
-      p.ring.visible = p.glow.visible = landed;
+      p.ring.visible = p.glow.visible = landed && !it.s;
+      if (it.s && Math.random() < dt * 20) puff(p.root.position.x, 0.15 + island.position.y, p.root.position.z, 1, '#f3e6d6', 0.6);
       p.ring.scale.setScalar(p.ringS * (1 + Math.sin(time * 5 + it.i) * 0.06));
     }
     if (info.bomb) {
@@ -830,6 +779,8 @@ function updateHeldWeapon(c, dt, s) {
       c.dragTheta = -(Math.PI - beta);
       // Start on the ground so the pickup reads as a heave.
       holder.position.set(g.x, 0.2, g.z + 0.3);
+      // Yaw outermost so the pan can sweep flat and the hammer can be held straight out.
+      holder.rotation.order = 'YXZ';
       holder.rotation.set(info.ranged || info.bomb ? 0 : -Math.PI / 2, 0, 0);
       if (info.bomb) holder.scale.setScalar(0.8);
       c.pivot.add(holder);
@@ -844,14 +795,16 @@ function updateHeldWeapon(c, dt, s) {
   const info = WEAPON_INFO[type];
   const wm = c.weaponMesh, g = c.grip;
   const sw = s ? s.sw || 0 : 0;
-  const phase = sw === 1 ? 'wind' : sw === 2 ? 'strike' : 'drag';
+  const phase = sw === 1 ? 'wind' : sw === 2 ? 'strike' : sw === 3 ? 'spin' : 'drag';
   if (phase !== c.wPhase) {
     if (phase === 'wind') c.sq += 0.25;
-    if (phase === 'strike') { c.sq -= 0.35; if (c.id === myId) shake = Math.max(shake, 0.15); }
+    if (phase === 'strike' || phase === 'spin') { c.sq -= 0.35; if (c.id === myId) shake = Math.max(shake, 0.15); }
+    if (phase === 'spin') c.spinClock = 0;
     c.wPhase = phase;
   }
   const moving = Math.hypot(c.dvx, c.dvz) > 1;
-  let px, py, pz, rx, rz, lean, k;
+  const side = s && s.sd < 0 ? -1 : 1;
+  let px, py, pz, rx, rz, lean, k, ry = 0, roll = 0;
   if (info.bomb) {
     // Held up in front with both paws, fuse fizzing.
     px = 0; py = g.y - 0.15 + Math.sin(time * 9) * 0.03; pz = 0.75;
@@ -865,10 +818,22 @@ function updateHeldWeapon(c, dt, s) {
     const recoil = phase === 'strike' ? 1 : 0;
     px = g.x * 0.7; py = g.y + 0.1; pz = 0.45 - recoil * 0.2;
     rx = -0.05 - recoil * 0.4; rz = 0; lean = 0; k = 18;
+  } else if (info.sweep && (phase === 'wind' || phase === 'strike')) {
+    // Flat sweep: pulled back on the side it's held, then whipped across to the other side.
+    const from = phase === 'wind' ? side : -side;
+    px = from * Math.abs(g.x) * 0.9; py = g.y + 0.25; pz = phase === 'wind' ? -0.05 : 0.35;
+    rx = Math.PI / 2; ry = from * (Math.PI / 2 + (phase === 'wind' ? 0.55 : 0.35)); rz = 0;
+    roll = -side * Math.PI / 2;
+    lean = phase === 'wind' ? -0.15 : 0.25; k = phase === 'wind' ? 9 : 26;
+  } else if (info.spin && (phase === 'wind' || phase === 'spin')) {
+    // Hammer held straight out to the side; the whole critter spins with it.
+    px = Math.abs(g.x) * 1.1; py = g.y + 0.35 + (phase === 'wind' ? Math.sin(time * 45) * 0.03 : 0); pz = 0.1;
+    rx = Math.PI / 2; ry = Math.PI / 2 - (phase === 'wind' ? 0.5 : 0.1); rz = 0;
+    lean = phase === 'wind' ? -0.2 : 0.05; k = phase === 'wind' ? 8 : 30;
   } else if (phase === 'wind') {
     // Struggling to lift it: trembling, leaning back.
     px = g.x * 0.25; py = g.y + 0.75; pz = -0.1;
-    rx = -0.4 + Math.sin(time * 45) * 0.06; rz = 0; lean = -0.38; k = 7;
+    rx = -0.4 + Math.sin(time * 45) * 0.06; rz = 0; lean = -0.38; k = info.windup < 0.15 ? 30 : 7;
   } else if (phase === 'strike') {
     px = g.x * 0.2; py = g.y + 0.3; pz = 0.5;
     rx = 1.95; rz = 0; lean = 0.42; k = 38;
@@ -882,9 +847,21 @@ function updateHeldWeapon(c, dt, s) {
   wm.position.y += (py - wm.position.y) * f;
   wm.position.z += (pz - wm.position.z) * f;
   wm.rotation.x += (rx - wm.rotation.x) * f;
+  wm.rotation.y += (ry - wm.rotation.y) * f;
   wm.rotation.z += (rz - wm.rotation.z) * f;
+  const model = wm.children[0];
+  if (model) model.rotation.y += (roll - model.rotation.y) * f;
   c.wLean += (lean - c.wLean) * (1 - Math.exp(-dt * 10));
   c.pivot.rotation.x += c.wLean;
+
+  if (phase === 'spin' && info.spin) {
+    c.spinClock += dt;
+    const u = Math.min(1, c.spinClock / info.spin);
+    c.pivot.rotation.y = (1 - (1 - u) * (1 - u)) * info.turns * Math.PI * 2;
+    // Whoosh trail off the hammer head.
+    wm.localToWorld(tipV.set(0, info.len * 0.85, 0));
+    if (u < 1) puff(tipV.x, tipV.y, tipV.z, 1, '#ffffff', 0.3);
+  }
 
   // Effort: sweat drops and dust kicked up by the dragging tip.
   if (!info.ranged && !info.bomb && (moving || phase === 'wind')) {
@@ -986,6 +963,15 @@ const sfx = {
   },
   fuse: () => noise({ dur: 0.4, vol: 0.06, f0: 5000, f1: 3000, q: 0.7, type: 'highpass' }),
   splash: () => noise({ dur: 0.35, vol: 0.18, f0: 2500, f1: 400, q: 0.8, type: 'bandpass' }),
+  kick: () => {
+    noise({ dur: 0.1, vol: 0.12, f0: 600, f1: 2000, q: 1.5, type: 'bandpass' });
+    tone({ f0: 180, f1: 70, dur: 0.1, vol: 0.12 });
+  },
+  boot: () => tone({ type: 'square', f0: 260, f1: 520, dur: 0.12, vol: 0.06 }),
+  wake: () => [1320, 990, 1480].forEach((f, i) => tone({ type: 'triangle', f0: f, f1: f * 1.1, dur: 0.08, vol: 0.08, delay: i * 0.05 })),
+  spin: () => noise({ dur: 0.6, vol: 0.18, f0: 400, f1: 3200, q: 2, type: 'bandpass' }),
+  climb: () => [440, 660, 880].forEach((f, i) => tone({ type: 'triangle', f0: f, f1: f * 1.2, dur: 0.1, vol: 0.08, delay: i * 0.08 })),
+  warn: () => [0, 0.25, 0.5].forEach((d) => tone({ type: 'square', f0: 660, f1: 440, dur: 0.18, vol: 0.05, delay: d })),
   win: () => [523, 659, 784, 1046].forEach((f, i) => tone({ type: 'triangle', f0: f, f1: f, dur: 0.25, vol: 0.1, delay: i * 0.11 })),
 };
 
@@ -1023,11 +1009,12 @@ function makeCritterEntry(id, animal) {
 function removeCritter(c) {
   scene.remove(c.root);
   if (c.label) c.label.remove();
+  if (c.bar) c.bar.remove();
 }
 
 function rebuildCritter(c) {
   const fresh = makeCritterEntry(c.id, c.animal);
-  for (const k of ['x', 'y', 'z', 'face', 'tx', 'ty', 'tz', 'tvx', 'tvy', 'tvz', 'tface', 's', 'label']) fresh[k] = c[k];
+  for (const k of ['x', 'y', 'z', 'face', 'tx', 'ty', 'tz', 'tvx', 'tvy', 'tvz', 'tface', 's', 'label', 'bar']) fresh[k] = c[k];
   scene.remove(c.root);
   return fresh;
 }
@@ -1145,8 +1132,22 @@ function animateCritter(c, dt, s, opts = {}) {
   p.scale.set(1 - sq * 0.5, 1 + sq, 1 - sq * 0.5);
   updateHeldWeapon(c, dt, s);
 
+  // Kick: lean back and shoot one leg forward.
+  const kickStart = !!(s && s.kk && !c.lastKk);
+  if (kickStart) c.kickA = 1;
+  c.lastKk = s ? s.kk : 0;
+  c.kickA = Math.max(0, (c.kickA || 0) - dt * 3.2);
+  const kickE = Math.sin(c.kickA * Math.PI);
+  p.rotation.x -= kickE * 0.3;
+  // Hanging off the fence: pulled up toward the rail as the climb progresses.
+  const hang = s ? s.hg || 0 : 0;
+  if (hang) {
+    p.rotation.x = 0.25 + Math.sin(time * 10) * 0.05;
+    p.position.y = Math.sin(hang * Math.PI * 7) * 0.05;
+  }
+
   if (isModel) {
-    animateModel(c, dt, { s, speed, held, holding, ko, falling, airborne, opts });
+    animateModel(c, dt, { s, speed, held: held || hang, holding, ko, falling, airborne, opts, kickStart });
     c.stars.visible = c.ko > 0.3;
     if (c.stars.visible) {
       c.stars.rotation.y += dt * 4;
@@ -1157,10 +1158,11 @@ function animateCritter(c, dt, s, opts = {}) {
   }
 
   // Feet: kick around when airborne, lift into the air when knocked flat
-  const kick = airborne || held || falling ? Math.sin(time * 18) * 0.2 : 0;
+  const kick = airborne || held || falling ? Math.sin(time * (hang ? 12 : 18)) * 0.2 : 0;
   const koLift = c.ko * 0.5;
   c.footL.position.set(-0.34, 0.13 + Math.max(0, sw) * 0.16 * amt + koLift + kick, 0.08 + sw * 0.28 * amt + koLift * 0.8);
-  c.footR.position.set(0.34, 0.13 + Math.max(0, -sw) * 0.16 * amt + koLift - kick, 0.08 - sw * 0.28 * amt + koLift * 0.8);
+  c.footR.position.set(0.34, 0.13 + Math.max(0, -sw) * 0.16 * amt + koLift - kick + kickE * 0.55, 0.08 - sw * 0.28 * amt + koLift * 0.8 + kickE * 0.95);
+  c.footR.scale.setScalar(1 + kickE * 0.3);
 
   // Arms
   if (s && s.pa && s.pa !== c.lastPa && !c.weaponType) c.punch[s.pa - 1] = 1;
@@ -1172,7 +1174,11 @@ function animateCritter(c, dt, s, opts = {}) {
     const side = i === 0 ? -1 : 1;
     const rest = c.restArm[i];
     let tx = rest.x, ty = rest.y + Math.sin(time * 2.5 + i) * 0.03, tz = rest.z - side * sw * 0.3 * amt;
-    if (holding) { tx = side * 0.5; ty = 1.65; tz = 0.9; }
+    if (hang) {
+      // Paws gripping the rail, hauling up hand over hand.
+      tx = side * 0.42; ty = 1.75 + Math.max(0, Math.sin(time * 7 + i * Math.PI)) * 0.18; tz = 0.6;
+    }
+    else if (holding) { tx = side * 0.5; ty = 1.65; tz = 0.9; }
     else if (c.weaponMesh && !(c.ko > 0.5)) {
       const wp = c.weaponMesh.position;
       tx = wp.x + (i === 0 ? -0.3 : 0.06);
@@ -1229,9 +1235,9 @@ function animateCritter(c, dt, s, opts = {}) {
   c.root.visible = !(s && s.st === 'out' && room?.phase !== 'lobby');
 }
 
-function animateModel(c, dt, { s, speed, held, holding, ko, falling, airborne, opts }) {
+function animateModel(c, dt, { s, speed, held, holding, ko, falling, airborne, opts, kickStart }) {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  if (s && s.pa && s.pa !== c.lastPa) {
+  if ((s && s.pa && s.pa !== c.lastPa) || kickStart) {
     c.punchT = 0.45;
     c.setState('punch', { restart: true, duration: 0.45 });
   }
@@ -1366,11 +1372,9 @@ function updateEffects(dt) {
 }
 
 // ---------- Menu / lobby UI ----------
+const ROOM_CODE = 'ghouse';
 const nameInput = $('nameInput');
-const codeInput = $('codeInput');
 nameInput.value = localStorage.getItem('bb-name') || '';
-const urlRoom = new URLSearchParams(location.search).get('room');
-if (urlRoom) codeInput.value = urlRoom.toUpperCase();
 
 function buildPicker(el, onPick) {
   el.innerHTML = '';
@@ -1421,15 +1425,13 @@ $('fullscreenBtn').onclick = goFullscreen;
 document.addEventListener('fullscreenchange', updateScreenUi);
 window.addEventListener('resize', updateScreenUi);
 updateScreenUi();
-$('createBtn').onclick = () => { initAudio(); goFullscreen(); socket.emit('create', { name: getName(), animal: myAnimal }); };
-$('joinBtn').onclick = () => {
+// There is a single room, so Play always joins it (creating it if nobody is there yet).
+$('playBtn').onclick = () => {
   initAudio();
   goFullscreen();
-  if (codeInput.value.trim().length !== 4) return showError('Enter a 4-letter room code');
-  socket.emit('join', { code: codeInput.value, name: getName(), animal: myAnimal });
+  socket.emit('join', { code: ROOM_CODE, name: getName(), animal: myAnimal });
 };
-codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('joinBtn').click(); });
-nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') (codeInput.value ? $('joinBtn') : $('createBtn')).click(); });
+nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('playBtn').click(); });
 
 // A host playing on localhost needs to hand phones the laptop's Wi-Fi address instead.
 const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
@@ -1439,7 +1441,7 @@ if (isLocalHost) {
     if (urls.length) { shareOrigin = urls[0]; renderShareUrl(); }
   }).catch(() => {});
 }
-function inviteLink() { return `${shareOrigin}/?room=${room.code}`; }
+function inviteLink() { return `${shareOrigin}/?room=${ROOM_CODE}`; }
 function renderShareUrl() {
   if (!room) return;
   $('shareUrl').textContent = inviteLink().replace(/^https?:\/\//, '');
@@ -1453,9 +1455,11 @@ $('copyBtn').onclick = async () => {
 if (isTouch) {
   document.querySelector('.controls-grid').innerHTML =
     '<span><b>Drag</b> anywhere to move</span><span><b>JUMP</b> button</span>' +
-    '<span><b>PUNCH</b> button</span><span><b>Hold GRAB</b></span>' +
-    '<span class="wide">Tap PUNCH while grabbing to <b>THROW</b></span>' +
-    '<span class="wide"><b>PICK UP</b> ✨ weapons, then <b>SWING</b> / <b>SHOOT</b></span>' +
+    '<span><b>PUNCH</b> / <b>SWING</b></span><span><b>Hold GRAB</b></span>' +
+    '<span><b>KICK</b> (boots bombs)</span><span><b>Drag THROW</b> to aim</span>' +
+    '<span class="wide">Drag from <b>THROW</b> and let go to throw, toss, lob or fire · let go on the button to cancel</span>' +
+    '<span class="wide"><b>PICK UP</b> ✨ weapons · Mallet <b>SWING</b> spins</span>' +
+    '<span class="wide">Hits only daze! <b>Grab &amp; throw</b> buddies over the fence or into the river</span>' +
     '<span class="wide"><b>🎥 Follow</b> cam: drag the right side to look around</span>';
 }
 $('startBtn').onclick = () => socket.emit('start');
@@ -1473,7 +1477,7 @@ function showError(msg) {
 socket.on('errorMsg', showError);
 socket.on('joined', ({ code, id }) => {
   myId = id;
-  history.replaceState(null, '', `?room=${code}`);
+  history.replaceState(null, '', `?room=${code.toLowerCase()}`);
   $('menu').classList.add('hidden');
   $('hud').classList.remove('hidden');
   $('touchButtons').classList.toggle('desktop', !isTouch);
@@ -1638,12 +1642,16 @@ socket.on('state', (s) => {
     if (n !== lastCount && n > 0) { lastCount = n; sfx.beep(false); }
     const mine = room?.players.find((p) => p.id === myId);
     const t = mine ? teamOf(mine) : -1;
-    setBanner(String(Math.max(1, n)), t >= 0 ? `You're on the <span style="color:${TEAM_COLORS[t]}">${TEAM_NAMES[t]} Team</span>` : '');
+    const late = s.players.find((p) => p.id === myId)?.lt;
+    if (late) setBanner('Round starting', 'Spectating… you join next round');
+    else setBanner(String(Math.max(1, n)), t >= 0 ? `You're on the <span style="color:${TEAM_COLORS[t]}">${TEAM_NAMES[t]} Team</span>` : '');
   } else if (s.phase === 'playing') {
     if (lastCount !== 0) { lastCount = 0; sfx.beep(true); }
     const me = s.players.find((p) => p.id === myId);
-    if (s.phaseTime < 1) setBanner('BRAWL!');
+    if (me && me.lt) setBanner('Round in progress', 'Spectating… you join next round');
+    else if (s.phaseTime < 1) setBanner('BRAWL!');
     else if (me && (me.st === 'out' || me.fl)) setBanner('You fell off!', 'Spectating…');
+    else if (s.shrinkIn <= 0 && s.shrinkIn > -2.5) setBanner('The island is shrinking!', 'The fence moves in with it');
     else setBanner('');
   } else {
     lastCount = -1;
@@ -1711,6 +1719,37 @@ function handleEvent(e) {
     puff(e.x, e.y, e.z, 8, '#7dff9a', 2);
     comicWord(e.x, e.y, e.z, false, ['STUCK!', 'SPLAT!', 'GLOOP!']);
     sfx.splat();
+  } else if (e.t === 'wake') {
+    // Bat on a dazed critter: the stars pop and they snap back up.
+    if (c) {
+      const h = c.height || 2.3;
+      c.ko = Math.min(c.ko, 0.2);
+      c.sq += 0.35;
+      c.stars.visible = false;
+      for (let i = 0; i < 6; i++) sparkle(c.x, c.y + h + 0.2, c.z);
+      puff(c.x, c.y + h, c.z, 6, '#fff3a0', 2.5);
+      comicWord(c.x, c.y + h * 0.6, c.z, true, ['WAKE UP!']);
+    }
+    sfx.wake();
+  } else if (e.t === 'spin') {
+    if (c) c.sq -= 0.2;
+    sfx.spin();
+  } else if (e.t === 'kick') {
+    sfx.kick();
+  } else if (e.t === 'kickBomb') {
+    puff(e.x, 0.2, e.z, 5, '#f3e6d6', 2);
+    comicWord(e.x, 0.6, e.z, false, ['BOOT!', 'PUNT!', 'GOAL!']);
+    sfx.boot();
+  } else if (e.t === 'hang') {
+    if (c) { c.sq -= 0.3; comicWord(c.x, c.y + 1.4, c.z, false, ['GRAB!', 'HANG ON!', 'PHEW!']); }
+    sfx.grab();
+  } else if (e.t === 'climb') {
+    if (c) { c.sq += 0.4; puff(c.x, c.y + 0.4, c.z, 6, '#ffffff', 2); comicWord(c.x, c.y + 1.6, c.z, false, ['BACK!', 'SAFE!', 'HUP!']); }
+    sfx.climb();
+  } else if (e.t === 'letgo') {
+    if (c) comicWord(c.x, c.y + 1.2, c.z, true, ['BYE!', 'NOOO!', 'SEE YA!']);
+  } else if (e.t === 'shrinkWarn') {
+    sfx.warn();
   }
 }
 
@@ -1738,7 +1777,12 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyV' && !e.repeat && myId && document.activeElement?.tagName !== 'INPUT') $('viewBtn').click();
 });
 let joy = { x: 0, y: 0, id: null, ox: 0, oy: 0 };
-let punchQueued = false, jumpQueued = false, mouseGrab = false, touchGrab = false;
+let punchQueued = false, jumpQueued = false, kickQueued = false, fireQueued = false, mouseGrab = false, touchGrab = false;
+// Aiming: hold L (mouse aims) or drag from the THROW button; releasing throws in the aimed direction.
+const AIM_DEADZONE = 26;
+let touchAim = { id: null, dx: 0, dy: 0 };
+let mouse = { x: 0, y: 0, seen: false };
+let myAim = null, fireAim = null;
 
 window.addEventListener('keydown', (e) => {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
@@ -1746,10 +1790,17 @@ window.addEventListener('keydown', (e) => {
   if (!e.repeat) {
     if (e.code === 'KeyJ') punchQueued = true;
     if (e.code === 'Space') jumpQueued = true;
+    if (e.code === 'KeyF') kickQueued = true;
   }
   if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
 });
-window.addEventListener('keyup', (e) => keys.delete(e.code));
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'KeyL' && keys.has('KeyL')) {
+    fireAim = computeAim();
+    fireQueued = !!fireAim;
+  }
+  keys.delete(e.code);
+});
 window.addEventListener('blur', () => { keys.clear(); mouseGrab = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 // pointerdown rather than mousedown: taps emit emulated mouse events that would punch.
@@ -1758,7 +1809,39 @@ canvas.addEventListener('pointerdown', (e) => {
   if (e.button === 0) punchQueued = true;
   if (e.button === 2) mouseGrab = true;
 });
+window.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'mouse') mouse = { x: e.clientX, y: e.clientY, seen: true };
+});
 window.addEventListener('mouseup', (e) => { if (e.button === 2) mouseGrab = false; });
+
+const aimRay = new THREE.Raycaster();
+const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const aimNdc = new THREE.Vector2(), aimHit = new THREE.Vector3(), camFwd = new THREE.Vector3();
+// A screen-space drag turned into a ground direction, whichever way the camera faces.
+function screenToGround(dx, dy) {
+  camera.getWorldDirection(camFwd);
+  camFwd.y = 0;
+  camFwd.normalize();
+  const x = -camFwd.z * dx - camFwd.x * dy, z = camFwd.x * dx - camFwd.z * dy;
+  const l = Math.hypot(x, z) || 1;
+  return { x: x / l, z: z / l };
+}
+function computeAim() {
+  const me = critters.get(myId);
+  if (!me || !snap || snap.phase === 'lobby') return null;
+  const facing = { x: Math.sin(me.face), z: Math.cos(me.face) };
+  if (touchAim.id !== null) {
+    return Math.hypot(touchAim.dx, touchAim.dy) < AIM_DEADZONE ? facing : screenToGround(touchAim.dx, touchAim.dy);
+  }
+  if (!keys.has('KeyL')) return null;
+  if (!mouse.seen) return facing;
+  aimNdc.set((mouse.x / innerWidth) * 2 - 1, -(mouse.y / innerHeight) * 2 + 1);
+  aimRay.setFromCamera(aimNdc, camera);
+  aimPlane.constant = -(island.position.y + 0.5);
+  if (!aimRay.ray.intersectPlane(aimPlane, aimHit)) return facing;
+  const dx = aimHit.x - me.x, dz = aimHit.z - me.z, l = Math.hypot(dx, dz);
+  return l < 0.3 ? facing : { x: dx / l, z: dz / l };
+}
 
 {
   const hold = (id, down, up) => {
@@ -1781,7 +1864,39 @@ window.addEventListener('mouseup', (e) => { if (e.button === 2) mouseGrab = fals
   };
   hold('tPunch', () => (punchQueued = true));
   hold('tJump', () => (jumpQueued = true));
+  hold('tKick', () => (kickQueued = true));
   hold('tGrab', () => (touchGrab = true), () => (touchGrab = false));
+
+  // THROW works like a second mini-joystick: drag to aim, let go to throw, let go on the button to cancel.
+  const el = $('tThrow'), knob = el.querySelector('.aimKnob');
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('down', 'aiming');
+    const r = el.getBoundingClientRect();
+    touchAim = { id: e.pointerId, ox: r.left + r.width / 2, oy: r.top + r.height / 2, dx: 0, dy: 0 };
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== touchAim.id) return;
+    touchAim.dx = e.clientX - touchAim.ox;
+    touchAim.dy = e.clientY - touchAim.oy;
+    const l = Math.hypot(touchAim.dx, touchAim.dy), k = l > 44 ? 44 / l : 1;
+    knob.style.transform = `translate(${touchAim.dx * k}px, ${touchAim.dy * k}px)`;
+    el.classList.toggle('cancel', l < AIM_DEADZONE);
+  });
+  const end = (e) => {
+    if (e.pointerId !== touchAim.id) return;
+    if (e.type === 'pointerup' && Math.hypot(touchAim.dx, touchAim.dy) >= AIM_DEADZONE) {
+      fireAim = computeAim();
+      fireQueued = !!fireAim;
+    }
+    touchAim = { id: null, dx: 0, dy: 0 };
+    el.classList.remove('down', 'aiming', 'cancel');
+    knob.style.transform = '';
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 if (isTouch) {
@@ -1827,7 +1942,7 @@ if (isTouch) {
 let lastSent = '';
 let lastSendTime = 0;
 function sendInput(now) {
-  if (!myId) { punchQueued = jumpQueued = false; return; }
+  if (!myId) { punchQueued = jumpQueued = kickQueued = fireQueued = false; return; }
   let x = 0, z = 0;
   if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
   if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
@@ -1842,14 +1957,103 @@ function sendInput(now) {
     [x, z] = [x * cs + z * sn, -x * sn + z * cs];
   }
   const grab = keys.has('KeyK') || keys.has('ShiftLeft') || keys.has('ShiftRight') || mouseGrab || touchGrab;
-  const key = `${x.toFixed(2)},${z.toFixed(2)},${grab}`;
+  myAim = computeAim();
+  const a = fireQueued ? fireAim : myAim;
+  const key = `${x.toFixed(2)},${z.toFixed(2)},${grab},${a ? `${a.x.toFixed(2)},${a.z.toFixed(2)}` : ''}`;
   // The follow camera keeps turning, so cap steady-state sends at ~30 Hz.
-  if (punchQueued || jumpQueued || (key !== lastSent && now - lastSendTime > 33) || now - lastSendTime > 150) {
-    socket.emit('input', { x, z, grab, punch: punchQueued, jump: jumpQueued });
+  if (punchQueued || jumpQueued || kickQueued || fireQueued || (key !== lastSent && now - lastSendTime > 33) || now - lastSendTime > 150) {
+    socket.emit('input', {
+      x, z, grab, punch: punchQueued, jump: jumpQueued, kick: kickQueued,
+      fire: fireQueued, aim: !!myAim, ax: a ? a.x : 0, az: a ? a.z : 0,
+    });
     lastSent = key;
     lastSendTime = now;
-    punchQueued = jumpQueued = false;
+    punchQueued = jumpQueued = kickQueued = fireQueued = false;
   }
+}
+
+// ---------- Aim preview: dotted arc (or line) to where the throw / shot will go ----------
+const AIM_DOTS = 22;
+const aimDots = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(0.1, 8, 6),
+  new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.85, depthWrite: false }),
+  AIM_DOTS * 8,
+);
+aimDots.frustumCulled = false;
+aimDots.renderOrder = 5;
+aimDots.count = 0;
+scene.add(aimDots);
+const aimRings = [];
+const aimRingGeo = new THREE.RingGeometry(0.55, 0.78, 32);
+const MY_AIM = new THREE.Color('#fff3a0'), OTHER_AIM = new THREE.Color('#ffffff');
+
+function aimProfile(s) {
+  const arcs = room?.arcs;
+  if (!arcs) return null;
+  if (s.h) return arcs.player;
+  const info = WEAPON_INFO[s.w];
+  if (!info) return arcs.kick;
+  return info.bomb ? arcs.bomb : info.ranged ? arcs.blaster : arcs.weapon;
+}
+
+function updateAimPreview(R) {
+  let n = 0, rings = 0;
+  const players = snap && snap.phase === 'playing' ? snap.players : [];
+  for (const s of players) {
+    const c = critters.get(s.id);
+    const mine = s.id === myId;
+    if (!c || s.st !== 'alive' || s.fl || s.hb || s.hg || s.ko || !(mine ? myAim : s.am)) continue;
+    const prof = aimProfile(s);
+    if (!prof) continue;
+    const dir = mine ? myAim : { x: Math.sin(c.face), z: Math.cos(c.face) };
+    const y0 = island.position.y;
+    const pts = [];
+    let land = null;
+    if (prof.line) {
+      const dots = Math.min(AIM_DOTS, Math.ceil(prof.line / 0.45));
+      for (let i = 1; i <= dots; i++) {
+        const d = 1.1 + (prof.line - 1.1) * (i / dots);
+        pts.push([c.x + dir.x * d, y0 + prof.y, c.z + dir.z * d]);
+      }
+    } else {
+      const g = room.arcs.g;
+      const sx = c.x + dir.x * prof.off, sz = c.z + dir.z * prof.off, sy = c.y + prof.y;
+      const vx = dir.x * prof.s + c.dvx * prof.carry, vz = dir.z * prof.s + c.dvz * prof.carry;
+      const T = (prof.vy + Math.sqrt(prof.vy * prof.vy + 2 * g * Math.max(0, sy))) / g;
+      for (let i = 1; i <= AIM_DOTS; i++) {
+        const t = (T * i) / AIM_DOTS;
+        pts.push([sx + vx * t, y0 + sy + prof.vy * t - 0.5 * g * t * t, sz + vz * t]);
+      }
+      land = [sx + vx * T, sz + vz * T];
+    }
+    for (const [x, y, z] of pts) {
+      if (n >= aimDots.instanceMatrix.count) break;
+      decoDummy.position.set(x, y, z);
+      decoDummy.rotation.set(0, 0, 0);
+      decoDummy.scale.setScalar(mine ? 1 : 0.7);
+      decoDummy.updateMatrix();
+      aimDots.setMatrixAt(n, decoDummy.matrix);
+      aimDots.setColorAt(n++, mine ? MY_AIM : OTHER_AIM);
+    }
+    if (land) {
+      if (!aimRings[rings]) {
+        const m = new THREE.Mesh(aimRingGeo, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }));
+        m.rotation.x = -Math.PI / 2;
+        scene.add(m);
+        aimRings[rings] = m;
+      }
+      const ring = aimRings[rings++];
+      // Red when it lands off the island.
+      ring.material.color.set(Math.hypot(land[0], land[1]) > R ? '#ff6b81' : mine ? '#fff3a0' : '#ffffff');
+      ring.position.set(land[0], y0 + 0.06, land[1]);
+      ring.scale.setScalar((mine ? 1 : 0.7) * (1 + Math.sin(time * 8) * 0.08));
+      ring.visible = true;
+    }
+  }
+  aimDots.count = n;
+  aimDots.instanceMatrix.needsUpdate = true;
+  if (aimDots.instanceColor) aimDots.instanceColor.needsUpdate = true;
+  for (let i = rings; i < aimRings.length; i++) aimRings[i].visible = false;
 }
 
 // ---------- Camera ----------
@@ -1916,31 +2120,64 @@ function updateCamera(dt, R) {
   camera.lookAt(camLook);
 }
 
-// Context-sensitive prompts: what GRAB and PUNCH will do right now.
+// "Island shrinks in m:ss", turning urgent shortly before the edge starts crumbling.
+let timerText = '';
+function updateShrinkTimer(playing, shrinking) {
+  const el = $('shrinkTimer');
+  const left = playing && snap.phase !== 'roundover' ? snap.shrinkIn : null;
+  let text = '';
+  if (left != null && left > 0) {
+    const sec = Math.ceil(left);
+    text = `🏝️ Island shrinks in ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  } else if (shrinking) text = '🌊 Island shrinking!';
+  el.classList.toggle('hidden', !text);
+  el.classList.toggle('warn', !!text && (left == null || left <= 15));
+  if (text !== timerText) { timerText = text; el.textContent = text; }
+}
+
+// Context-sensitive prompts: what each button will do right now.
 let hintState = '';
 function updateActionHints(me) {
-  let grab = 'GRAB', punch = 'PUNCH', hint = '';
+  let grab = 'GRAB', punch = 'PUNCH', toss = 'AIM', kick = 'KICK', hint = '';
+  let kickGlow = false;
   if (me) {
     const near = (snap.items || []).find((it) => it.y < 0.5 && Math.hypot(it.x - me.x, it.z - me.z) < 1.9);
-    if (me.h) punch = 'THROW';
-    else if (me.w) {
-      punch = me.w === 'blaster' ? 'SHOOT' : WEAPON_INFO[me.w]?.bomb ? 'THROW' : 'SWING';
+    const info = WEAPON_INFO[me.w];
+    if (me.hg) {
+      hint = isTouch ? 'Hanging on! Mash <b>JUMP</b> to climb back in' : 'Hanging on! Mash <b>Space</b> / <b>K</b> to climb back in';
+    } else if (me.h) {
+      punch = 'THROW';
+      toss = 'THROW';
+      hint = isTouch ? 'Drag <b>THROW</b> to aim, let go to throw them' : 'Hold <b>L</b> and aim with the mouse, release to throw';
+    } else if (info) {
+      punch = me.w === 'blaster' ? 'SHOOT' : info.bomb ? 'THROW' : 'SWING';
+      toss = me.w === 'blaster' ? 'FIRE' : info.bomb ? 'LOB' : 'AIM';
       grab = 'TOSS';
-      if (WEAPON_INFO[me.w]?.bomb) hint = `${WEAPON_INFO[me.w].label} is lit! ${isTouch ? 'Tap <b>THROW</b>' : '<b>J</b> to throw it'} before it blows`;
-      else hint = isTouch ? '' : `${WEAPON_INFO[me.w].label}: <b>J</b> ${punch.toLowerCase()} · <b>K</b> throw it`;
+      if (info.bomb) hint = `${info.label} is lit! ${isTouch ? 'Drag <b>LOB</b> to aim' : 'Hold <b>L</b> to aim, release to lob'} before it blows`;
+      else if (!isTouch) hint = `${info.label}: <b>J</b> ${info.spin ? 'spin attack' : punch.toLowerCase()} · hold <b>L</b> to aim &amp; ${me.w === 'blaster' ? 'fire' : 'toss'}`;
+      else if (info.spin) hint = '<b>SWING</b> to spin and bonk everyone around you';
     } else if (near) {
       grab = 'PICK UP';
-      hint = isTouch ? `Tap <b>PICK UP</b> for the ${WEAPON_INFO[near.t].label}` : `Press <b>K</b> to pick up the ${WEAPON_INFO[near.t].label}`;
+      const label = WEAPON_INFO[near.t].label;
+      if (WEAPON_INFO[near.t].bomb) {
+        kick = 'KICK 💣';
+        kickGlow = true;
+        hint = isTouch ? `<b>PICK UP</b> or <b>KICK</b> the ${label}` : `<b>K</b> to pick up the ${label} · <b>F</b> to kick it`;
+      } else hint = isTouch ? `Tap <b>PICK UP</b> for the ${label}` : `Press <b>K</b> to pick up the ${label}`;
     }
   }
-  const key = grab + punch + hint;
+  const key = [grab, punch, toss, kick, hint].join('|');
   if (key === hintState) return;
   hintState = key;
   const keyHint = (k) => (isTouch ? '' : `<small>${k}</small>`);
   $('tGrab').innerHTML = grab + keyHint('K');
   $('tPunch').innerHTML = punch + keyHint('J');
+  $('tKick').innerHTML = kick + keyHint('F');
+  $('tThrow').querySelector('.tlabel').innerHTML = toss + keyHint('L');
   $('tGrab').classList.toggle('glow', grab === 'PICK UP');
+  $('tKick').classList.toggle('glow', kickGlow);
   $('tPunch').classList.toggle('armed', punch === 'SWING' || punch === 'SHOOT' || (punch === 'THROW' && !!me?.w));
+  $('tThrow').classList.toggle('armed', toss !== 'AIM');
   $('actionHint').innerHTML = hint;
   $('actionHint').classList.toggle('hidden', !hint);
 }
@@ -1964,10 +2201,11 @@ function frame(now) {
   updateObstacles(dt, R, !!playing);
   updateRiver(dt, R);
   syncItems(playing ? snap : null, dt);
-  updatePlatforms(dt, R, !!playing);
   updateGuards(R, !!playing);
-  const shrinking = playing && R < ISLAND_MAX - 0.05 && snap.phase === 'playing';
+  const shrinking = playing && snap.phase === 'playing' && snap.shrinkIn <= 0 && R > ISLAND_MIN + 0.05;
   edgeRing.material.color.set(shrinking ? (Math.sin(time * 8) > 0 ? '#ff8fa3' : '#ffffff') : '#ffffff');
+  updateShrinkTimer(playing, shrinking);
+  updateAimPreview(R);
 
   for (const g of puffyClouds) {
     g.userData.a += g.userData.v * dt;
@@ -2002,10 +2240,25 @@ function frame(now) {
       updateTeamMarker(c, p);
       const show = c.root.visible && !(c.s && c.s.fl);
       c.label.style.display = show ? '' : 'none';
+      const hang = show && snap?.phase !== 'lobby' ? c.s?.hg || 0 : 0;
+      if (!c.bar) {
+        c.bar = document.createElement('div');
+        c.bar.className = 'climb-bar';
+        c.bar.innerHTML = '<i></i>';
+        labelsEl.append(c.bar);
+      }
+      c.bar.style.display = hang ? '' : 'none';
       if (show) {
         projV.set(c.x, c.y + (c.height || 2.3) + 0.6 + (c.ko > 0.5 ? -1.2 : 0), c.z).project(camera);
-        c.label.style.left = `${(projV.x * 0.5 + 0.5) * window.innerWidth}px`;
-        c.label.style.top = `${(-projV.y * 0.5 + 0.5) * window.innerHeight}px`;
+        const sx = (projV.x * 0.5 + 0.5) * window.innerWidth, sy = (-projV.y * 0.5 + 0.5) * window.innerHeight;
+        c.label.style.left = `${sx}px`;
+        c.label.style.top = `${sy}px`;
+        if (hang) {
+          // Climb progress under the name while hanging on the fence.
+          c.bar.style.left = `${sx}px`;
+          c.bar.style.top = `${sy + 6}px`;
+          c.bar.firstChild.style.width = `${Math.round(hang * 100)}%`;
+        }
       }
     });
   }

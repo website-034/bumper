@@ -29,18 +29,14 @@
     <input id="nameInput" maxlength="14" placeholder="Your name" autocomplete="off" />
     <div class="picker-label">Pick your critter</div>
     <div id="animalPicker" class="animal-picker"></div>
-    <button id="createBtn" class="btn primary">Create Room</button>
-    <div class="divider"><span>or join a friend</span></div>
-    <div class="row">
-      <input id="codeInput" maxlength="4" placeholder="CODE" autocomplete="off" />
-      <button id="joinBtn" class="btn">Join</button>
-    </div>
+    <button id="playBtn" class="btn primary">Play</button>
+    <p class="hint">Everyone plays together in room <b>ghouse</b></p>
     <p id="menuError" class="error"></p>
   </div>
 
   <div id="lobby" class="panel side hidden">
     <div class="room-code-label">Room code</div>
-    <div class="room-code" id="roomCode">----</div>
+    <div class="room-code" id="roomCode">ghouse</div>
     <div class="share-url">Friends open <b id="shareUrl"></b></div>
     <button id="copyBtn" class="btn small">Copy invite link</button>
     <div id="lobbyPicker" class="animal-picker compact"></div>
@@ -66,10 +62,13 @@
     <div class="controls-grid">
       <span><b>WASD</b> move</span>
       <span><b>Space</b> jump</span>
-      <span><b>J</b> / <b>Click</b> punch</span>
+      <span><b>J</b> / <b>Click</b> punch · swing</span>
       <span><b>K</b> / <b>Right-click</b> hold to grab</span>
-      <span class="wide">Punch while grabbing to <b>THROW</b></span>
-      <span class="wide"><b>K</b> on a ✨ weapon to pick it up · <b>K</b> again to throw it</span>
+      <span><b>F</b> kick (boots bombs too)</span>
+      <span><b>Hold L</b> + mouse: aim</span>
+      <span class="wide">Release <b>L</b> to <b>THROW</b> a grabbed buddy, toss a weapon, lob a bomb or fire the blaster</span>
+      <span class="wide"><b>K</b> on a ✨ weapon to pick it up · Mallet <b>SWING</b> = spin attack</span>
+      <span class="wide">Hits only daze! Knock players out, then <b>grab &amp; throw</b> them over the fence or into the river</span>
       <span><b>V</b> switch camera</span>
       <span><b>Q</b> / <b>E</b> turn camera</span>
     </div>
@@ -77,15 +76,18 @@
 
   <div id="hud" class="hidden">
     <ul id="scoreboard"></ul>
+    <div id="shrinkTimer" class="hidden"></div>
     <div id="banner"></div>
     <div id="actionHint" class="hidden"></div>
     <div id="dizzyMeter"><div id="dizzyFill"></div><span>DIZZY</span></div>
   </div>
 
   <div id="touchButtons" class="hidden">
-    <div class="tbtn" id="tPunch">PUNCH</div>
-    <div class="tbtn" id="tGrab">GRAB</div>
+    <div class="tbtn" id="tKick">KICK</div>
+    <div class="tbtn" id="tThrow"><span class="tlabel">THROW</span><i class="aimKnob"></i></div>
     <div class="tbtn" id="tJump">JUMP</div>
+    <div class="tbtn" id="tGrab">GRAB</div>
+    <div class="tbtn" id="tPunch">PUNCH</div>
   </div>
   <div id="joyBase" class="hidden"><div id="joyKnob"></div></div>
   <div id="topButtons">

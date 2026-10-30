@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 
-// len = grip-to-tip length; windup must match the server's WEAPONS table.
+// len = grip-to-tip length; windup, spin, turns and sweep must match the server's WEAPONS table.
 export const WEAPON_INFO = {
-  bat: { label: 'Baseball Bat', len: 2.25, windup: 0.38, words: ['WHACK!', 'SMACK!', 'HOME RUN!'] },
-  pan: { label: 'Frying Pan', len: 1.85, windup: 0.3, words: ['CLANG!', 'DONG!', 'TONK!'] },
-  hammer: { label: 'Squeaky Mallet', len: 2.05, windup: 0.55, words: ['BONK!', 'SQUEAK!', 'KA-BONK!'] },
-  lollipop: { label: 'Giant Lollipop', len: 2.3, windup: 0.4, words: ['SWEET!', 'THWAP!', 'SUGAR RUSH!'] },
-  chicken: { label: 'Rubber Chicken', len: 1.8, windup: 0.26, words: ['BAWK!', 'SQUAWK!', 'FLOP!'] },
+  bat: { label: 'Baseball Bat', len: 2.25, windup: 0.1, words: ['WHACK!', 'SMACK!', 'HOME RUN!'] },
+  chicken: { label: 'Rubber Chicken', len: 1.8, windup: 0.2, words: ['BAWK!', 'SQUAWK!', 'FLOP!'] },
+  pan: { label: 'Frying Pan', len: 1.85, windup: 0.3, sweep: true, words: ['CLANG!', 'DONG!', 'TONK!'] },
+  lollipop: { label: 'Giant Lollipop', len: 2.3, windup: 0.38, words: ['SWEET!', 'THWAP!', 'SUGAR RUSH!'] },
+  hammer: { label: 'Squeaky Mallet', len: 2.05, windup: 0.45, spin: 0.65, turns: 2, words: ['BONK!', 'SQUEAK!', 'KA-BONK!'] },
   blaster: { label: 'Foam Blaster', len: 1.2, windup: 0, ranged: true, words: ['SPLAT!', 'FWUMP!', 'PLOP!'] },
   bomb: { label: 'Bomb', len: 1.2, windup: 0, bomb: true, words: ['KABOOM!', 'BOOM!', 'KA-POW!'] },
   sticky: { label: 'Sticky Bomb', len: 1.2, windup: 0, bomb: true, sticky: true, words: ['KABLOOEY!', 'SPLOOSH!', 'GLORP-BOOM!'] },
