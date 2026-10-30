@@ -704,12 +704,9 @@ function syncItems(s, dt) {
       p.holder.position.y = p.baseY;
       p.ring.visible = p.glow.visible = false;
     } else {
-      const k = 1 - Math.exp(-dt * 14);
-      if (Math.abs(it.y - (p.root.position.y - island.position.y)) > 6) p.root.position.y = it.y + island.position.y;
-      p.root.position.x += (it.x - p.root.position.x) * k;
-      p.root.position.y += (it.y + island.position.y - p.root.position.y) * k;
-      p.root.position.z += (it.z - p.root.position.z) * k;
-      const landed = it.y < 0.05;
+      const q = sampleAt('items', it.i, interpOut) || it;
+      p.root.position.set(q.x, q.y + island.position.y, q.z);
+      const landed = q.y < 0.05;
       p.root.rotation.y = it.r;
       // Tumble while airborne, then settle and bob gently (bombs just sit and fizz).
       // Kicked bombs skid along the ground, wobbling.
@@ -731,12 +728,12 @@ function syncItems(s, dt) {
   for (const [id, p] of pickups) if (!seen.has(id)) { scene.remove(p.root); pickups.delete(id); }
 
   const seenShots = new Set();
-  const age = Math.min(0.1, (performance.now() - snapTime) / 1000);
   for (const sh of showItems ? s.shots || [] : []) {
     seenShots.add(sh.i);
     let m = shotMeshes.get(sh.i);
     if (!m) { m = buildShot(); scene.add(m); shotMeshes.set(sh.i, m); }
-    m.position.set(sh.x + sh.vx * age, sh.y, sh.z + sh.vz * age);
+    const q = sampleAt('shots', sh.i, interpOut) || sh;
+    m.position.set(q.x, q.y, q.z);
   }
   for (const [id, m] of shotMeshes) if (!seenShots.has(id)) { scene.remove(m); shotMeshes.delete(id); }
 }
@@ -1059,9 +1056,68 @@ function angleLerp(a, b, t) {
   return a + d * t;
 }
 
+// ---------- Snapshot buffer: everything but my own critter is drawn INTERP_DELAY in the past ----------
+const INTERP_DELAY = 0.1;
+const snapBuf = [];
+let clockOffset = null; // server clock minus local clock, tracking the fastest-arriving snapshots
+
+function bufferSnapshot(s) {
+  const now = performance.now() / 1000;
+  const off = s.t - now;
+  const lastT = snapBuf.length ? snapBuf[snapBuf.length - 1].t : -Infinity;
+  if (s.t <= lastT - 1) snapBuf.length = 0; // server restarted
+  if (clockOffset == null || !snapBuf.length || off > clockOffset || Math.abs(off - clockOffset) > 1) clockOffset = off;
+  else clockOffset += (off - clockOffset) * 0.02; // let latency creep upward slowly
+  if (s.t <= lastT) return;
+  snapBuf.push({
+    t: s.t,
+    players: new Map(s.players.map((p) => [p.id, p])),
+    items: new Map((s.items || []).map((it) => [it.i, it])),
+    shots: new Map((s.shots || []).map((sh) => [sh.i, sh])),
+  });
+  while (snapBuf.length > 2 && snapBuf[1].t < s.t - 1) snapBuf.shift();
+}
+
+const renderTime = () => performance.now() / 1000 + (clockOffset ?? 0) - INTERP_DELAY;
+// Position of a player / item / shot at renderTime(): blended between the snapshots either side,
+// or nudged forward along its velocity (at most 100 ms) if the newer snapshot hasn't arrived yet.
+function sampleAt(kind, id, out) {
+  const rt = renderTime();
+  let a = null, at = 0, b = null, bt = 0;
+  for (let i = snapBuf.length - 1; i >= 0; i--) {
+    const e = snapBuf[i][kind].get(id);
+    if (!e) continue;
+    if (snapBuf[i].t <= rt) { a = e; at = snapBuf[i].t; break; }
+    b = e; bt = snapBuf[i].t;
+  }
+  if (!a && !b) return null;
+  if (a && b && Math.hypot(b.x - a.x, b.z - a.z) < 6) {
+    const k = (rt - at) / Math.max(1e-3, bt - at);
+    out.x = a.x + (b.x - a.x) * k;
+    out.y = a.y + (b.y - a.y) * k;
+    out.z = a.z + (b.z - a.z) * k;
+    out.f = a.f != null ? angleLerp(a.f, b.f, k) : 0;
+    return out;
+  }
+  const e = b || a;
+  const ext = a && !b ? Math.min(0.1, rt - at) : 0;
+  out.x = e.x + (e.vx || 0) * ext;
+  out.y = e.y + (e.g ? 0 : (e.vy || 0) * ext);
+  out.z = e.z + (e.vz || 0) * ext;
+  out.f = e.f ?? 0;
+  return out;
+}
+
 // ---------- Local prediction: my critter reacts to my input instantly, then eases onto the server ----------
-// Must match server.js: GROUND_ACCEL, AIR_ACCEL, JUMP_VEL, GRAVITY, PUNCH_COOLDOWN, KICK_COOLDOWN, AIM_TURN.
+// Defaults mirror server.js; the room info sends the real values (room.move).
 const PRED = { accel: 9, airAccel: 2.5, jump: 8.5, gravity: 24, punchCd: 420, kickCd: 700, aimTurn: 22 };
+const PRED_SNAP = 1.5; // metres of disagreement before we stop easing and just jump to the server
+function applyMoveConstants(m) {
+  if (!m) return;
+  Object.assign(PRED, { accel: m.accel, airAccel: m.airAccel, jump: m.jump, gravity: m.gravity, aimTurn: m.aimTurn });
+  PRED.punchCd = m.punchCd * 1000;
+  PRED.kickCd = m.kickCd * 1000;
+}
 const myMove = { x: 0, z: 0 };let rtt = -1;
 setInterval(() => {
   if (!socket.connected) return;
@@ -1103,7 +1159,7 @@ function predictMe(c, s, dt) {
     const h = predAt(c.hist, snapTime - Math.max(0, rtt));
     c.ex = s.x - (h ? h.x : c.x);
     c.ez = s.z - (h ? h.z : c.z);
-    if (Math.hypot(c.ex, c.ez) > 3) { c.x += c.ex; c.z += c.ez; c.ex = c.ez = 0; c.hist.length = 0; c.pvx = s.vx; c.pvz = s.vz; }
+    if (Math.hypot(c.ex, c.ez) > PRED_SNAP) { c.x += c.ex; c.z += c.ez; c.ex = c.ez = 0; c.hist.length = 0; c.pvx = s.vx; c.pvz = s.vz; }
   }
   const ke = 1 - Math.exp(-dt * 8);
   const dx = c.ex * ke, dz = c.ez * ke;
@@ -1142,12 +1198,27 @@ function predictActions(punch, jump, kick) {
   }
 }
 
+const interpOut = { x: 0, y: 0, z: 0, f: 0 };
+function carriedByMe(c, s) {
+  const me = critters.get(myId);
+  if (!me?.pred || !me.s) return false;
+  c.x = me.x + (s.x - me.s.x);
+  c.y = me.y + (s.y - me.s.y);
+  c.z = me.z + (s.z - me.s.z);
+  c.face = s.f;
+  return true;
+}
 function animateCritter(c, dt, s, opts = {}) {
   const ox = c.x, oz = c.z;
   if (s && opts.me && predictMe(c, s, dt)) {
     const age = Math.min(0.1, (performance.now() - snapTime) / 1000);
     const py = c.ty + c.tvy * age * (s.g ? 0 : 1);
     c.y += (py - c.y) * (1 - Math.exp(-dt * 16));
+  } else if (s && opts.interp && s.hb === myId && carriedByMe(c, s)) {
+    // Someone I'm carrying stays in my (predicted) hands rather than 100 ms behind them.
+  } else if (s && opts.interp && sampleAt('players', c.id, interpOut)) {
+    c.x = interpOut.x; c.y = interpOut.y; c.z = interpOut.z;
+    c.face = interpOut.f;
   } else if (s) {
     const age = Math.min(0.1, (performance.now() - snapTime) / 1000);
     const px = c.tx + c.tvx * age, py = c.ty + c.tvy * age * (s.g ? 0 : 1), pz = c.tz + c.tvz * age;
@@ -1599,6 +1670,7 @@ socket.on('joined', ({ code, id }) => {
 
 socket.on('room', (r) => {
   room = r;
+  applyMoveConstants(r.move);
   buildObstacles();
   syncCritters();
   renderLobby();
@@ -1746,6 +1818,8 @@ let lastCount = -1;
 socket.on('state', (s) => {
   snap = s;
   snapTime = performance.now();
+  if (s.phase === 'lobby') snapBuf.length = 0;
+  else bufferSnapshot(s);
   if (s.phase !== 'lobby') {
     for (const p of s.players) {
       const c = critters.get(p.id);
@@ -2358,7 +2432,8 @@ function frame(now) {
         animateCritter(c, dt, c.s, { wave: p.id === myId });
       } else {
         const hop = room.phase === 'roundover' && (p.id === room.winnerId || (room.winnerTeam >= 0 && p.team === room.winnerTeam));
-        animateCritter(c, dt, c.s, { hop, me: p.id === myId });
+        // I'm drawn interpolated too while someone carries me, so I stay in their hands.
+        animateCritter(c, dt, c.s, { hop, me: p.id === myId, interp: p.id !== myId || !!c.s?.hb });
       }
       updateTeamMarker(c, p);
       const show = c.root.visible && !(c.s && c.s.fl);

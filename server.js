@@ -259,6 +259,8 @@ function roomInfo(room) {
     obstacles: room.obstacles,
     river: room.river && { pts: room.river.pts, half: RIVER_HALF, bridges: room.river.bridges },
     guardInset: GUARD_INSET,
+    // Movement constants for client-side prediction of the local player.
+    move: { accel: GROUND_ACCEL, airAccel: AIR_ACCEL, jump: JUMP_VEL, gravity: GRAVITY, punchCd: PUNCH_COOLDOWN, kickCd: KICK_COOLDOWN, aimTurn: AIM_TURN },
     // Launch profiles so the client's aim preview matches the real arcs.
     arcs: {
       g: GRAVITY,
@@ -1549,6 +1551,7 @@ const r2 = (v) => Math.round(v * 100) / 100;
 const fuseOf = (it) => (it && it.fuse != null ? r2(it.fuse) : -1);
 function snapshot(room) {
   return {
+    t: Math.round(serverClock * 1000) / 1000,
     phase: room.phase,
     phaseTime: r2(room.phaseTime),
     countdown: COUNTDOWN,
@@ -1591,11 +1594,13 @@ function snapshot(room) {
 }
 
 let sendAccum = 0;
+let serverClock = 0; // seconds; stamps snapshots so clients can interpolate between them
 let last = process.hrtime.bigint();
 setInterval(() => {
   const now = process.hrtime.bigint();
   const dt = Math.min(0.05, Number(now - last) / 1e9);
   last = now;
+  serverClock += dt;
   sendAccum += dt;
   const send = sendAccum >= 1 / SEND_RATE;
   if (send) sendAccum = 0;
