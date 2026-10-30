@@ -1,13 +1,13 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { ANIMALS, buildCritter } from './characters.js';
+import { buildCritter } from './characters.js';
 import { MODEL_CHARACTERS, loadManifest, loadModel, isModelReady, buildModelCritter } from './models.js';
-import { FLUFFY, buildCorgi } from './fluffy.js';
+import { FLUFFY, buildFluffy } from './crew.js';
 import { WEAPON_INFO, buildWeapon, buildPickup, buildShot, animateBomb } from './weapons.js';
 
 await loadManifest();
 // Furry and jelly critters plus any .glb characters listed in /models/characters.json.
-const CHARACTERS = { ...FLUFFY, ...ANIMALS, ...MODEL_CHARACTERS };
+const CHARACTERS = { ...FLUFFY, ...MODEL_CHARACTERS };
 
 // Straight to WebSocket (skips the long-polling handshake), falling back to polling if blocked.
 const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
@@ -982,8 +982,7 @@ const labelsEl = $('labels');
 
 // Model characters show a jelly stand-in until their .glb has finished loading.
 function buildCharacter(animal) {
-  if (animal === 'corgi') return buildCorgi();
-  if (!MODEL_CHARACTERS[animal]) return buildCritter(animal);
+  if (!MODEL_CHARACTERS[animal]) return buildFluffy(animal);
   if (isModelReady(animal)) return buildModelCritter(animal);
   return Object.assign(buildCritter('bear'), { placeholderFor: animal });
 }
@@ -1467,6 +1466,7 @@ function updateEffects(dt) {
 
 // ---------- Menu / lobby UI ----------
 const ROOM_CODE = 'ghouse';
+let wantedAnimal = null;
 const nameInput = $('nameInput');
 nameInput.value = localStorage.getItem('bb-name') || '';
 
@@ -1478,15 +1478,32 @@ function buildPicker(el, onPick) {
     const sw = document.createElement('span');
     sw.className = 'swatch';
     sw.style.background = CHARACTERS[key].color;
-    b.append(sw, CHARACTERS[key].label);
+    const label = document.createElement('span');
+    label.textContent = CHARACTERS[key].label;
+    b.append(sw, label);
     b.onclick = () => onPick(key);
     el.append(b);
   }
 }
+// Characters other players in the room already have: animal -> their name.
+function takenAnimals() {
+  return new Map((room?.players || []).filter((p) => p.id !== myId).map((p) => [p.animal, p.name]));
+}
 function markPicker() {
-  document.querySelectorAll('.animal-picker button').forEach((b) => b.classList.toggle('selected', b.dataset.animal === myAnimal));
+  const taken = takenAnimals();
+  document.querySelectorAll('.animal-picker button').forEach((b) => {
+    const by = taken.get(b.dataset.animal);
+    b.classList.toggle('selected', b.dataset.animal === myAnimal);
+    b.classList.toggle('taken', !!by);
+    b.disabled = !!by;
+    b.title = by ? `Taken by ${by}` : '';
+    let tag = b.querySelector('small');
+    if (by && !tag) b.append((tag = document.createElement('small')));
+    if (tag) tag.textContent = by ? `taken` : '';
+  });
 }
 function pickAnimal(key) {
+  if (takenAnimals().has(key)) return;
   myAnimal = key;
   localStorage.setItem('bb-animal', key);
   markPicker();
@@ -1523,6 +1540,7 @@ updateScreenUi();
 $('playBtn').onclick = () => {
   initAudio();
   goFullscreen();
+  wantedAnimal = myAnimal;
   socket.emit('join', { code: ROOM_CODE, name: getName(), animal: myAnimal });
 };
 nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('playBtn').click(); });
@@ -1626,7 +1644,17 @@ function renderLobby() {
   $('waitingText').classList.toggle('hidden', isHost);
   $('startBtn').textContent = room.players.length < 2 ? 'Start (practice)' : 'Start Round';
   const me = room.players.find((p) => p.id === myId);
-  if (me) { myAnimal = me.animal; markPicker(); }
+  if (me) {
+    if (wantedAnimal && wantedAnimal !== me.animal) {
+      const note = $('pickNote');
+      note.textContent = `${CHARACTERS[wantedAnimal]?.label || 'That critter'} was taken, so you're ${CHARACTERS[me.animal]?.label || me.animal}. Pick any free one!`;
+      note.classList.remove('hidden');
+      setTimeout(() => note.classList.add('hidden'), 6000);
+    }
+    wantedAnimal = null;
+    myAnimal = me.animal;
+  }
+  markPicker();
 }
 
 function renderScoreboard() {

@@ -130,7 +130,7 @@ const OBSTACLE_KINDS = [
   { t: 'bush', r: 0.7 },
 ];
 
-const ANIMALS = ['corgi', 'bear', 'cat', 'bunny', 'duck', 'frog', 'pig', 'penguin', 'fox'];
+const ANIMALS = ['corgi', 'cat', 'panda', 'bunny', 'raccoon', 'sheep', 'hamster', 'bulldog', 'pig', 'skunk'];
 const BOT_NAMES = ['Biscuit', 'Noodle', 'Pickles', 'Mochi', 'Waffles', 'Bean', 'Toffee', 'Pudding'];
 
 const rooms = new Map();
@@ -185,16 +185,22 @@ function allCharacters() {
   return [...ANIMALS, ...modelIds()];
 }
 
-function validAnimal(a) {
+// Each character can only be played by one person per room.
+const animalTaken = (room, a, exceptId) => [...room.players.values()].some((p) => p.id !== exceptId && p.animal === a);
+
+function pickAnimal(room, a, id) {
   const all = allCharacters();
-  return all.includes(a) ? a : all[Math.floor(Math.random() * all.length)];
+  if (all.includes(a) && !animalTaken(room, a, id)) return a;
+  const free = all.filter((c) => !animalTaken(room, c, id));
+  const pool = free.length ? free : all;
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 function addPlayer(room, id, name, animal, isBot = false) {
   const p = {
     id,
     name: String(name || 'Buddy').slice(0, 14),
-    animal: validAnimal(animal),
+    animal: pickAnimal(room, isBot ? null : animal, id),
     isBot,
     score: 0,
     x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
@@ -1628,7 +1634,10 @@ io.on('connection', (socket) => {
   socket.on('setAnimal', (animal) => {
     if (!room || room.phase !== 'lobby') return;
     const p = room.players.get(socket.id);
-    if (p && allCharacters().includes(animal)) { p.animal = animal; broadcastRoom(room); }
+    if (!p || !allCharacters().includes(animal)) return;
+    if (animalTaken(room, animal, p.id)) { socket.emit('errorMsg', 'That critter is already taken'); broadcastRoom(room); return; }
+    p.animal = animal;
+    broadcastRoom(room);
   });
 
   socket.on('input', (inp) => {

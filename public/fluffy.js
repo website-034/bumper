@@ -1,12 +1,8 @@
 import * as THREE from 'three';
 import { makeStars } from './characters.js';
 
-// Furry, dressed-up characters built in code.
-export const FLUFFY = {
-  corgi: { label: 'Cowboy Corgi', color: '#e8954a' },
-};
-
-const SHELLS = matchMedia('(pointer: coarse)').matches ? 9 : 14;
+// Cowboy Corgi plus the shell-fur toolkit the rest of the crew (crew.js) is built from.
+export const SHELLS = matchMedia('(pointer: coarse)').matches ? 9 : 14;
 
 // ---------- Shell fur ----------
 let furTex = null;
@@ -46,17 +42,20 @@ function shellMaterial(layer, shells, len, density) {
     alphaTest: 0.12 + t * 0.8,
     color: new THREE.Color().setScalar(0.6 + 0.4 * t),
   });
-  const push = (len * t).toFixed(4);
-  const droop = (len * 0.5 * t * t).toFixed(4);
+  // Offsets are uniforms so every shell of every critter shares one shader program.
+  const push = len * t;
+  const droop = len * 0.5 * t * t;
   m.onBeforeCompile = (shader) => {
-    shader.vertexShader = shader.vertexShader.replace(
+    shader.uniforms.furPush = { value: push };
+    shader.uniforms.furDroop = { value: droop };
+    shader.vertexShader = 'uniform float furPush;\nuniform float furDroop;\n' + shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
-       transformed += normal * ${push};
-       transformed.y -= ${droop};`,
+       transformed += normal * furPush;
+       transformed.y -= furDroop;`,
     );
   };
-  m.customProgramCacheKey = () => `fur-${key}`;
+  m.customProgramCacheKey = () => 'fur-shell';
   shellMats.set(key, m);
   return m;
 }
@@ -69,7 +68,7 @@ function skinMaterial() {
   return skinMats.get('skin');
 }
 
-function furry(geometry, { len = 0.07, shells = SHELLS, density = 28 } = {}) {
+export function furry(geometry, { len = 0.07, shells = SHELLS, density = 28 } = {}) {
   const group = new THREE.Group();
   const base = new THREE.Mesh(geometry, skinMaterial());
   base.castShadow = true;
@@ -84,7 +83,7 @@ function furry(geometry, { len = 0.07, shells = SHELLS, density = 28 } = {}) {
 }
 
 // Per-vertex colouring so one furry mesh can carry a coat pattern.
-function paint(geometry, fn) {
+export function paint(geometry, fn) {
   const p = geometry.attributes.position;
   const cols = new Float32Array(p.count * 3);
   const v = new THREE.Vector3();
@@ -98,7 +97,7 @@ function paint(geometry, fn) {
   return geometry;
 }
 
-function deform(geometry, fn) {
+export function deform(geometry, fn) {
   const p = geometry.attributes.position;
   const v = new THREE.Vector3();
   for (let i = 0; i < p.count; i++) {
@@ -110,24 +109,24 @@ function deform(geometry, fn) {
   return geometry;
 }
 
-const smooth = (a, b, x) => {
+export const smooth = (a, b, x) => {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 
 // ---------- Shared bits ----------
 const glossyCache = new Map();
-function glossy(color, opts = {}) {
+export function glossy(color, opts = {}) {
   const key = color + JSON.stringify(opts);
   if (!glossyCache.has(key)) glossyCache.set(key, new THREE.MeshPhysicalMaterial({ color, roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.05, ...opts }));
   return glossyCache.get(key);
 }
-function std(color, opts = {}) {
+export function std(color, opts = {}) {
   const key = 's' + color + JSON.stringify(opts);
   if (!glossyCache.has(key)) glossyCache.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...opts }));
   return glossyCache.get(key);
 }
-function mesh(geometry, material, pos = [0, 0, 0], scale = [1, 1, 1], rot = [0, 0, 0]) {
+export function mesh(geometry, material, pos = [0, 0, 0], scale = [1, 1, 1], rot = [0, 0, 0]) {
   const m = new THREE.Mesh(geometry, material);
   m.position.set(...pos);
   m.scale.set(...scale);
@@ -138,14 +137,14 @@ function mesh(geometry, material, pos = [0, 0, 0], scale = [1, 1, 1], rot = [0, 
 
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpDir = new THREE.Vector3();
-function stretchLimb(limb, from, to, radius) {
+export function stretchLimb(limb, from, to, radius) {
   tmpDir.subVectors(to, from);
   const len = Math.max(0.001, tmpDir.length());
   limb.position.copy(from);
   limb.quaternion.setFromUnitVectors(UP, tmpDir.divideScalar(len));
   limb.scale.set(radius, len, radius);
 }
-const limbGeo = (() => {
+export const limbGeo = (() => {
   const g = new THREE.CylinderGeometry(1, 1, 1, 14, 1, true);
   g.translate(0, 0.5, 0);
   return g;
@@ -179,12 +178,12 @@ const ORANGE = new THREE.Color('#e48a3e');
 const CREAM = new THREE.Color('#fff3e2');
 const PINK = new THREE.Color('#f4aaa8');
 
-function makeEye(side) {
+export function makeEye(side, iris = '#6d3a1c', [x, y, z] = [0.26, 0.05, 0.62]) {
   const eye = new THREE.Group();
-  eye.position.set(side * 0.26, 0.05, 0.62);
+  eye.position.set(side * x, y, z);
   eye.rotation.y = side * 0.32;
   eye.add(mesh(new THREE.SphereGeometry(0.118, 24, 18), glossy('#2a1710'), [0, 0, 0], [1, 1.12, 0.7]));
-  eye.add(mesh(new THREE.SphereGeometry(0.075, 20, 14), glossy('#6d3a1c'), [0, -0.02, 0.06], [1, 1.1, 0.45]));
+  eye.add(mesh(new THREE.SphereGeometry(0.075, 20, 14), glossy(iris), [0, -0.02, 0.06], [1, 1.1, 0.45]));
   eye.add(mesh(new THREE.SphereGeometry(0.045, 16, 12), glossy('#0d0806'), [0, -0.02, 0.085], [1, 1.1, 0.45]));
   eye.add(mesh(new THREE.SphereGeometry(0.032, 12, 10), glossy('#ffffff'), [0.04, 0.05, 0.08]));
   eye.add(mesh(new THREE.SphereGeometry(0.015, 10, 8), glossy('#ffffff'), [-0.035, -0.045, 0.085]));

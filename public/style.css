@@ -61,10 +61,12 @@ html, body {
 .subtitle { opacity: 0.75; margin-bottom: 2px; }
 .picker-label { font-size: 14px; font-weight: 600; opacity: 0.7; margin-top: 2px; }
 
-.animal-picker { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.animal-picker { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
 .animal-picker button {
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.15;
+  text-align: center;
   font-weight: 600;
   color: #5a4a6b;
   padding: 6px 2px 4px;
@@ -81,6 +83,8 @@ html, body {
 .animal-picker button .swatch { width: 26px; height: 26px; border-radius: 50%; box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.1); }
 .animal-picker button:hover { transform: translateY(-2px); }
 .animal-picker button.selected { border-color: #c7b8ff; background: #fff; }
+.animal-picker button.taken { opacity: 0.38; filter: grayscale(1); cursor: not-allowed; transform: none; }
+.animal-picker button.taken small { display: block; font-size: 9px; font-weight: 700; color: #8a7a9a; }
 .animal-picker.compact button { font-size: 11px; padding: 4px 2px 2px; }
 .animal-picker.compact .swatch { width: 18px; height: 18px; }
 
