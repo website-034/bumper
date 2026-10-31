@@ -24,7 +24,14 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/vendor/three', express.static(path.join(__dirname, 'node_modules/three/build')));
 app.use('/vendor/three-addons', express.static(path.join(__dirname, 'node_modules/three/examples/jsm')));
 const server = http.createServer(app);
-const io = new Server(server);
+// A player whose connection drops briefly keeps their critter, id and place in the round.
+const AWAY_GRACE_MS = 30000;
+const AWAY_GRACE_LOBBY_MS = 8000;
+const io = new Server(server, {
+  connectionStateRecovery: { maxDisconnectionDuration: AWAY_GRACE_MS, skipMiddlewares: true },
+  // Snapshots are repetitive JSON: compressing them cuts phone data use several times over.
+  perMessageDeflate: { threshold: 512 },
+});
 
 // ---- Tunables (world units: metres, seconds) ----
 const TICK_RATE = 60;
@@ -283,7 +290,10 @@ function roomInfo(room) {
     river: room.river && { pts: room.river.pts, half: RIVER_HALF, bridges: room.river.bridges },
     guardInset: GUARD_INSET,
     // Movement constants for client-side prediction of the local player.
-    move: { accel: GROUND_ACCEL, airAccel: AIR_ACCEL, jump: JUMP_VEL, gravity: GRAVITY, punchCd: PUNCH_COOLDOWN, kickCd: KICK_COOLDOWN, aimTurn: AIM_TURN },
+    move: {
+      accel: GROUND_ACCEL, airAccel: AIR_ACCEL, jump: JUMP_VEL, gravity: GRAVITY, punchCd: PUNCH_COOLDOWN, kickCd: KICK_COOLDOWN, aimTurn: AIM_TURN,
+      body: BODY_R, flow: RIVER_FLOW, bridge: BRIDGE_HALF_LEN,
+    },
     // Launch profiles so the client's aim preview matches the real arcs.
     arcs: {
       g: GRAVITY,
@@ -1711,7 +1721,6 @@ function snapshot(room) {
       i: it.id, t: it.type, x: r2(it.x), y: r2(it.y), z: r2(it.z), r: it.rot || 0, f: fuseOf(it), k: it.stuckTo || '', s: it.skid ? 1 : 0,
     })),
     shots: room.shots.map((s) => ({ i: s.id, x: r2(s.x), y: r2(s.y), z: r2(s.z), vx: r2(s.vx), vz: r2(s.vz) })),
-    events: room.events.splice(0),
   };
 }
 
@@ -1746,48 +1755,122 @@ function applySecret(room, s) {
   if ('invUses' in s) sec.invUses = clampInt(s.invUses, 1, 10, sec.invUses);
 }
 
+// One bad tick must never freeze the round: log it (rate-limited) and keep going.
+const errSeen = new Map();
+function logError(where, err) {
+  const key = `${where}:${err && err.message}`;
+  const now = Date.now();
+  if (now - (errSeen.get(key) || 0) < 10000) return;
+  errSeen.set(key, now);
+  console.error(`[${new Date().toISOString()}] ${where}:`, err && err.stack || err);
+}
+process.on('uncaughtException', (err) => logError('uncaught', err));
+process.on('unhandledRejection', (err) => logError('unhandled', err));
+
+// Fixed-step simulation: game time keeps pace with real time even when a timer fires late,
+// instead of slowing down (which froze the round timer on a busy server).
+const STEP = 1 / TICK_RATE;
+const MAX_STEPS = 6;
+let stepAccum = 0;
 let sendAccum = 0;
 let serverClock = 0; // seconds; stamps snapshots so clients can interpolate between them
 let last = process.hrtime.bigint();
+let slowWarnAt = 0;
 setInterval(() => {
   const now = process.hrtime.bigint();
-  const dt = Math.min(0.05, Number(now - last) / 1e9);
+  stepAccum += Math.min(0.25, Number(now - last) / 1e9);
   last = now;
-  serverClock += dt;
-  sendAccum += dt;
-  const send = sendAccum >= 1 / SEND_RATE;
-  if (send) sendAccum = 0;
-  for (const room of rooms.values()) {
-    tickRoom(room, dt);
-    if (send) {
-      io.to(room.code).emit('state', snapshot(room));
-      sendPrivate(room);
+  let steps = 0;
+  while (stepAccum >= STEP && steps < MAX_STEPS) {
+    stepAccum -= STEP;
+    steps++;
+    serverClock += STEP;
+    sendAccum += STEP;
+    for (const room of rooms.values()) {
+      try { tickRoom(room, STEP); } catch (err) { logError('tick', err); }
     }
   }
+  if (stepAccum >= STEP) stepAccum = 0; // hopelessly behind: drop the backlog rather than spiral
+  if (sendAccum < 1 / SEND_RATE) return;
+  sendAccum %= 1 / SEND_RATE;
+  for (const room of rooms.values()) {
+    try {
+      // Volatile: a congested client skips a stale snapshot instead of queueing a burst of them.
+      io.to(room.code).volatile.emit('state', snapshot(room));
+      if (room.events.length) io.to(room.code).emit('ev', room.events.splice(0));
+      sendPrivate(room);
+    } catch (err) { logError('send', err); }
+  }
+  const took = Number(process.hrtime.bigint() - now) / 1e6;
+  if (took > 25 && Date.now() - slowWarnAt > 10000) {
+    slowWarnAt = Date.now();
+    console.warn(`Slow server tick: ${took.toFixed(1)} ms`);
+  }
 }, 1000 / TICK_RATE);
+
+function removePlayer(room, id) {
+  const me = room.players.get(id);
+  if (!me) return;
+  clearTimeout(me.awayTimer);
+  dropWeapon(room, me, false);
+  if (me.holding) release(room, me, false);
+  if (me.heldBy) {
+    const h = room.players.get(me.heldBy);
+    if (h) h.holding = null;
+  }
+  room.players.delete(id);
+  const humans = [...room.players.values()].filter((p) => !p.isBot);
+  if (humans.length === 0) {
+    rooms.delete(room.code);
+    return;
+  }
+  if (room.hostId === id) room.hostId = (humans.find((p) => !p.away) || humans[0]).id;
+  broadcastRoom(room);
+}
+
+const clearInput = (p) => Object.assign(p.input, { x: 0, z: 0, grab: false, punch: false, jump: false, kick: false, fire: false, aim: false });
 
 io.on('connection', (socket) => {
   let room = null;
 
-  function join(r, name, animal) {
+  // Back from a short drop-out: same socket id, same critter, carry on where we left off.
+  if (socket.recovered) {
+    const r = rooms.get(ROOM_CODE);
+    const p = r && r.players.get(socket.id);
+    if (p) {
+      room = r;
+      clearTimeout(p.awayTimer);
+      p.away = false;
+      socket.join(r.code);
+      socket.emit('room', roomInfo(r));
+    } else {
+      socket.emit('rejoin');
+    }
+  }
+
+  function join(r, name, animal, sid) {
+    // Same browser tab coming back on a new connection: drop its stranded old critter first.
+    const sess = typeof sid === 'string' ? sid.slice(0, 40) : '';
+    if (sess) for (const p of [...r.players.values()]) if (p.away && p.sid === sess) removePlayer(r, p.id);
+    if (!rooms.has(r.code)) r = getRoom();
     if (r.players.size >= MAX_PLAYERS) return socket.emit('errorMsg', 'Room is full');
     room = r;
     socket.join(r.code);
-    addPlayer(r, socket.id, name, animal);
+    addPlayer(r, socket.id, name, animal).sid = sess;
     socket.emit('joined', { code: r.code, id: socket.id });
     broadcastRoom(r);
   }
 
   // Create and join both land in the single room.
-  socket.on('create', ({ name, animal } = {}) => {
+  socket.on('create', ({ name, animal, sid } = {}) => {
     if (room) return;
-    join(getRoom(), name, animal);
+    join(getRoom(), name, animal, sid);
   });
 
-  socket.on('join', ({ code, name, animal } = {}) => {
+  socket.on('join', ({ code, name, animal, sid } = {}) => {
     if (room) return;
     if (code && String(code).toLowerCase().trim() !== ROOM_CODE) return socket.emit('errorMsg', 'Room not found');
-    join(getRoom(), name, animal);
+    join(getRoom(), name, animal, sid);
   });
 
   socket.on('rtt', (cb) => { if (typeof cb === 'function') cb(); });
@@ -1874,25 +1957,18 @@ io.on('connection', (socket) => {
     broadcastRoom(room);
   });
 
-  socket.on('disconnect', () => {
+  // Keep the critter for a grace period in case the connection comes back (phones drop Wi-Fi a lot).
+  socket.on('disconnect', (reason) => {
     if (!room) return;
-    const me = room.players.get(socket.id);
-    if (me) {
-      dropWeapon(room, me, false);
-      if (me.holding) release(room, me, false);
-      if (me.heldBy) {
-        const h = room.players.get(me.heldBy);
-        if (h) h.holding = null;
-      }
-    }
-    room.players.delete(socket.id);
-    const humans = [...room.players.values()].filter((p) => !p.isBot);
-    if (humans.length === 0) {
-      rooms.delete(room.code);
-      return;
-    }
-    if (room.hostId === socket.id) room.hostId = humans[0].id;
-    broadcastRoom(room);
+    const r = room, me = r.players.get(socket.id);
+    if (!me) return;
+    if (reason === 'client namespace disconnect' || reason === 'server namespace disconnect') return removePlayer(r, socket.id);
+    me.away = true;
+    clearInput(me);
+    clearTimeout(me.awayTimer);
+    me.awayTimer = setTimeout(() => removePlayer(r, socket.id), r.phase === 'lobby' ? AWAY_GRACE_LOBBY_MS : AWAY_GRACE_MS);
+    const present = [...r.players.values()].find((p) => !p.isBot && !p.away);
+    if (r.hostId === socket.id && present) { r.hostId = present.id; broadcastRoom(r); }
   });
 });
 

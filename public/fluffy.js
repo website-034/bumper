@@ -29,46 +29,40 @@ function furTexture() {
   return furTex;
 }
 
+// All shells of one furry part are drawn in a single instanced call: each instance is one shell,
+// and aShell (0..1, its height through the coat) drives push, droop, density cut-off and shading.
 const shellMats = new Map();
-function shellMaterial(layer, shells, len, density) {
-  const key = `${layer}/${shells}/${len}/${density}`;
+function shellMaterial(len, density) {
+  const key = `${len}/${density}`;
   if (shellMats.has(key)) return shellMats.get(key);
-  const t = layer / shells;
   const tex = furTexture().clone();
   tex.needsUpdate = true;
   tex.repeat.set(density, density / 2);
-  const m = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    roughness: 1,
-    alphaMap: tex,
-    alphaTest: 0.12 + t * 0.8,
-    color: new THREE.Color().setScalar(0.6 + 0.4 * t),
-  });
-  // Offsets are uniforms so every shell of every critter shares one shader program.
-  const push = len * t;
-  const droop = len * 0.5 * t * t;
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, alphaMap: tex });
   m.onBeforeCompile = (shader) => {
-    shader.uniforms.furPush = { value: push };
-    shader.uniforms.furDroop = { value: droop };
-    shader.uniforms.furRim = { value: 0.55 * t * t };
+    shader.uniforms.furLen = { value: len };
     shader.uniforms.furTime = FUR_TIME;
-    shader.vertexShader = 'uniform float furPush;\nuniform float furDroop;\nuniform float furTime;\n' + shader.vertexShader.replace(
+    shader.vertexShader = 'attribute float aShell;\nattribute vec2 aLag;\nuniform float furLen;\nuniform float furTime;\nvarying float vShell;\n' + shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
+       vShell = aShell;
+       float furPush = furLen * aShell;
        transformed += normal * furPush;
-       transformed.y -= furDroop;
-       transformed.xz += vec2(sin(furTime * 2.3 + position.y * 9.0 + position.x * 6.0), cos(furTime * 1.9 + position.z * 8.0)) * furPush * 0.18;`,
+       transformed.y -= furLen * 0.5 * aShell * aShell;
+       transformed.xz += vec2(sin(furTime * 2.3 + position.y * 9.0 + position.x * 6.0), cos(furTime * 1.9 + position.z * 8.0)) * furPush * 0.18;
+       transformed.xz += aLag * aShell * aShell;`,
     );
     // Sheen: the outer tips catch light around the silhouette, inner shells stay darker (fake AO).
-    shader.fragmentShader = 'uniform float furRim;\n' + shader.fragmentShader.replace(
-      '#include <opaque_fragment>',
-      `outgoingLight += diffuseColor.rgb * furRim * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.5);
-       #include <opaque_fragment>`,
-    );
+    shader.fragmentShader = 'varying float vShell;\n' + shader.fragmentShader
+      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= 0.6 + 0.4 * vShell;')
+      .replace('#include <alphatest_fragment>', 'if (diffuseColor.a < 0.12 + vShell * 0.8) discard;')
+      .replace(
+        '#include <opaque_fragment>',
+        `outgoingLight += diffuseColor.rgb * 0.55 * vShell * vShell * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.5);
+         #include <opaque_fragment>`,
+      );
   };
-  m.customProgramCacheKey = () => 'fur-shell';
-  m.userData.layer = layer;
-  m.visible = furFull || layer % 2 === 0;
+  m.customProgramCacheKey = () => 'fur-inst';
   shellMats.set(key, m);
   return m;
 }
@@ -78,7 +72,22 @@ let furFull = true;
 // Low tier draws every other shell: half the fur cost, same silhouette.
 export function setFurDetail(full) {
   furFull = full;
-  for (const m of shellMats.values()) m.visible = full || m.userData.layer % 2 === 0;
+}
+// Far-away critters need far fewer shells: the strands are sub-pixel there anyway.
+const FUR_NEAR = 9, FUR_FAR = 32, FUR_FAR_KEEP = 0.3;
+function setShellCount(renderer, scene, camera) {
+  const g = this.geometry, e = this.matrixWorld.elements, c = camera.matrixWorld.elements;
+  const d = Math.hypot(e[12] - c[12], e[13] - c[13], e[14] - c[14]);
+  const keep = 1 - (1 - FUR_FAR_KEEP) * Math.min(1, Math.max(0, (d - FUR_NEAR) / (FUR_FAR - FUR_NEAR)));
+  const max = furFull ? g.userData.shells : g.userData.half;
+  g.instanceCount = Math.min(max, Math.max(3, Math.round(g.userData.shells * keep)));
+}
+
+// Outermost first, then evenly spread (bit-reversed), so any prefix still covers the whole coat.
+function spread(layers) {
+  const top = [...layers].sort((a, b) => b - a);
+  const vdc = (i) => { let r = 0, f = 0.5; for (; i; i >>= 1, f /= 2) if (i & 1) r += f; return r; };
+  return top.map((l, i) => [l, vdc(i)]).sort((a, b) => a[1] - b[1]).map(([l]) => l);
 }
 
 const skinMats = new Map();
@@ -95,13 +104,40 @@ export function furry(geometry, { len = 0.07, shells = SHELLS, density = 28 } = 
   base.castShadow = true;
   base.receiveShadow = true;
   group.add(base);
-  for (let i = 1; i <= shells; i++) {
-    const shell = new THREE.Mesh(geometry, shellMaterial(i, shells, len, density));
-    shell.receiveShadow = true;
-    shell.layers.set(FUR_LAYER);
-    group.add(shell);
-  }
+
+  // Same vertex buffers as the base (shared on the GPU), drawn once per shell.
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.index = geometry.index;
+  for (const [name, attr] of Object.entries(geometry.attributes)) geo.setAttribute(name, attr);
+  // Even layers first, so the low tier can simply draw the first half; each half is spread out
+  // so distance LOD can draw any prefix.
+  const evens = [], odds = [];
+  for (let i = 1; i <= shells; i++) (i % 2 ? odds : evens).push(i);
+  const order = [...spread(evens), ...spread(odds)];
+  geo.setAttribute('aShell', new THREE.InstancedBufferAttribute(new Float32Array(order.map((i) => i / shells)), 1));
+  const lag = new THREE.InstancedBufferAttribute(new Float32Array(shells * 2), 2);
+  lag.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('aLag', lag);
+  geo.instanceCount = shells;
+  geo.userData = { shells, half: Math.floor(shells / 2) };
+  if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+  geo.boundingSphere = geometry.boundingSphere.clone();
+  geo.boundingSphere.radius += len * 2 + 0.6;
+  const shell = new THREE.Mesh(geo, shellMaterial(len, density));
+  shell.receiveShadow = true;
+  shell.layers.set(FUR_LAYER);
+  shell.onBeforeRender = setShellCount;
+  group.add(shell);
+
   group.userData.fur = len;
+  // Outer shells trail fast motion (offset in the group's local space, scaled by shell height²).
+  let lx = 0, lz = 0;
+  group.userData.setLag = (kx, kz) => {
+    if (Math.abs(kx - lx) + Math.abs(kz - lz) < 1e-4) return;
+    lx = kx; lz = kz;
+    for (let i = 0; i < shells; i++) lag.setXY(i, kx, kz);
+    lag.needsUpdate = true;
+  };
   return group;
 }
 
@@ -201,15 +237,23 @@ const ORANGE = new THREE.Color('#e48a3e');
 const CREAM = new THREE.Color('#fff3e2');
 const PINK = new THREE.Color('#f4aaa8');
 
+// Shared by every eye of every critter; detail sized to how small they are on screen.
+const EYE_GEO = [
+  new THREE.SphereGeometry(0.118, 18, 14),
+  new THREE.SphereGeometry(0.075, 16, 12),
+  new THREE.SphereGeometry(0.045, 12, 8),
+  new THREE.SphereGeometry(0.032, 8, 6),
+  new THREE.SphereGeometry(0.015, 6, 4),
+];
 export function makeEye(side, iris = '#6d3a1c', [x, y, z] = [0.26, 0.05, 0.62]) {
   const eye = new THREE.Group();
   eye.position.set(side * x, y, z);
   eye.rotation.y = side * 0.32;
-  eye.add(mesh(new THREE.SphereGeometry(0.118, 24, 18), glossy('#2a1710'), [0, 0, 0], [1, 1.12, 0.7]));
-  eye.add(mesh(new THREE.SphereGeometry(0.075, 20, 14), glossy(iris), [0, -0.02, 0.06], [1, 1.1, 0.45]));
-  eye.add(mesh(new THREE.SphereGeometry(0.045, 16, 12), glossy('#0d0806'), [0, -0.02, 0.085], [1, 1.1, 0.45]));
-  eye.add(mesh(new THREE.SphereGeometry(0.032, 12, 10), glossy('#ffffff'), [0.04, 0.05, 0.08]));
-  eye.add(mesh(new THREE.SphereGeometry(0.015, 10, 8), glossy('#ffffff'), [-0.035, -0.045, 0.085]));
+  eye.add(mesh(EYE_GEO[0], glossy('#2a1710'), [0, 0, 0], [1, 1.12, 0.7]));
+  eye.add(mesh(EYE_GEO[1], glossy(iris), [0, -0.02, 0.06], [1, 1.1, 0.45]));
+  eye.add(mesh(EYE_GEO[2], glossy('#0d0806'), [0, -0.02, 0.085], [1, 1.1, 0.45]));
+  eye.add(mesh(EYE_GEO[3], glossy('#ffffff'), [0.04, 0.05, 0.08]));
+  eye.add(mesh(EYE_GEO[4], glossy('#ffffff'), [-0.035, -0.045, 0.085]));
   // Knocked-out swirl, drawn over the eye.
   const swirl = new THREE.Mesh(new THREE.CircleGeometry(0.125, 28), new THREE.MeshBasicMaterial({ map: swirlTexture(), transparent: true }));
   swirl.position.z = 0.092;

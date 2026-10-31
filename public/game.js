@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildCritter } from './characters.js';
 import { MODEL_CHARACTERS, loadManifest, loadModel, isModelReady, buildModelCritter } from './models.js';
 import { FLUFFY, buildFluffy, setGlassQuality } from './crew.js';
@@ -18,6 +19,9 @@ const CHARACTERS = { ...FLUFFY, ...MODEL_CHARACTERS };
 
 // Straight to WebSocket (skips the long-polling handshake), falling back to polling if blocked.
 const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
+// Per-tab id so a reconnect on a fresh socket replaces this tab's stranded critter.
+const SESSION_ID = sessionStorage.getItem('bb-sid') || Math.random().toString(36).slice(2) + Date.now().toString(36);
+sessionStorage.setItem('bb-sid', SESSION_ID);
 const $ = (id) => document.getElementById(id);
 const canvas = $('game');
 
@@ -32,6 +36,7 @@ let myId = null;
 let room = null;
 let snap = null;
 let snapTime = 0;
+let snapSentAt = null; // local time the latest snapshot would have arrived with no extra delay
 let lastPhase = null;
 let time = 0;
 let shake = 0;
@@ -197,7 +202,7 @@ const pebbles = new THREE.InstancedMesh(
 pebbles.receiveShadow = true;
 const flowerCount = 900;
 const flowers = new THREE.InstancedMesh(
-  new THREE.SphereGeometry(0.09, 8, 6),
+  new THREE.IcosahedronGeometry(0.09, 0),
   new THREE.MeshStandardMaterial({ roughness: 0.6 }),
   flowerCount,
 );
@@ -306,7 +311,7 @@ function updateDeco(R) {
 // ---------- Background: cloud sea, puffy clouds, little islands ----------
 const cloudMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, emissive: '#fff4fb', emissiveIntensity: 0.55 });
 const seaCount = 180;
-const cloudSea = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 12), cloudMat, seaCount);
+const cloudSea = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 11, 8), cloudMat, seaCount);
 for (let i = 0; i < seaCount; i++) {
   const r = 30 + Math.random() * 90, a = Math.random() * Math.PI * 2;
   decoDummy.position.set(Math.cos(a) * r, -17 - Math.random() * 4, Math.sin(a) * r);
@@ -321,12 +326,16 @@ const puffyClouds = [];
 for (let i = 0; i < 9; i++) {
   const g = new THREE.Group();
   const n = 4 + Math.floor(Math.random() * 3);
+  // One merged mesh per cloud instead of a draw call per puff.
+  const puffs = [];
   for (let j = 0; j < n; j++) {
-    const m = new THREE.Mesh(cloudSea.geometry, cloudMat);
-    m.position.set((j - n / 2) * 1.3, Math.random() * 0.6, (Math.random() - 0.5) * 1.2);
-    m.scale.setScalar(1.1 + Math.random() * 0.9);
-    g.add(m);
+    decoDummy.position.set((j - n / 2) * 1.3, Math.random() * 0.6, (Math.random() - 0.5) * 1.2);
+    decoDummy.scale.setScalar(1.1 + Math.random() * 0.9);
+    decoDummy.rotation.set(0, 0, 0);
+    decoDummy.updateMatrix();
+    puffs.push(cloudSea.geometry.clone().applyMatrix4(decoDummy.matrix));
   }
+  g.add(new THREE.Mesh(mergeGeometries(puffs), cloudMat));
   const a = Math.random() * Math.PI * 2;
   const r = 62 + Math.random() * 35;
   g.userData = { a, r, y: -8 + Math.random() * 10, v: 0.01 + Math.random() * 0.02 };
@@ -1117,8 +1126,22 @@ function buildCharacter(animal) {
   return Object.assign(buildCritter('bear'), { placeholderFor: animal });
 }
 
+// Tiny bits (pupils, eye shines, brows, buttons) are invisible in the shadow map but each costs a
+// shadow draw call, so only the bigger parts cast.
+const _ws = new THREE.Vector3();
+function trimShadowCasters(root) {
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    if (!o.isMesh || !o.castShadow || !o.geometry) return;
+    if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+    o.getWorldScale(_ws);
+    if (o.geometry.boundingSphere.radius * Math.max(_ws.x, _ws.y, _ws.z) < 0.13) o.castShadow = false;
+  });
+}
+
 function makeCritterEntry(id, animal) {
   const c = buildCharacter(animal);
+  trimShadowCasters(c.root);
   scene.add(c.root);
   return Object.assign(c, {
     id, animal,
@@ -1245,13 +1268,60 @@ function sampleAt(kind, id, out) {
 
 // ---------- Local prediction: my critter reacts to my input instantly, then eases onto the server ----------
 // Defaults mirror server.js; the room info sends the real values (room.move).
-const PRED = { accel: 9, airAccel: 2.5, jump: 8.5, gravity: 24, punchCd: 420, kickCd: 700, aimTurn: 22 };
+const PRED = { accel: 9, airAccel: 2.5, jump: 8.5, gravity: 24, punchCd: 420, kickCd: 700, aimTurn: 22, body: 0.85, flow: 6, bridge: 1.15 };
 const PRED_SNAP = 1.5; // metres of disagreement before we stop easing and just jump to the server
+const STALL_MS = 350; // no snapshot for this long: the connection is stuck, so hold still instead of drifting
+const LATE_MS = 200; // snapshots arriving this late (a burst after a hiccup) are too stale to correct against
 function applyMoveConstants(m) {
   if (!m) return;
   Object.assign(PRED, { accel: m.accel, airAccel: m.airAccel, jump: m.jump, gravity: m.gravity, aimTurn: m.aimTurn });
+  if (m.body) Object.assign(PRED, { body: m.body, flow: m.flow, bridge: m.bridge });
   PRED.punchCd = m.punchCd * 1000;
   PRED.kickCd = m.kickCd * 1000;
+}
+
+// Same river test as the server: the current's direction here, or null on land / a bridge.
+function riverFlowAt(x, z) {
+  const rv = currentRiver();
+  if (!rv) return null;
+  let best = null, bestD = Infinity;
+  for (const sg of rv.segs) {
+    const px = x - sg.x0, pz = z - sg.z0;
+    const t = Math.max(0, Math.min(sg.len, px * sg.dx + pz * sg.dz));
+    const d = Math.hypot(px - sg.dx * t, pz - sg.dz * t);
+    if (d < bestD) { bestD = d; best = sg; }
+  }
+  if (bestD > rv.half) return null;
+  for (const b of rv.bridges) {
+    if (Math.abs((x - b.x) * Math.sin(b.a) + (z - b.z) * Math.cos(b.a)) < PRED.bridge) return null;
+  }
+  return best;
+}
+
+// Mirrors the server's obstacle and fence pushes, so my critter stops where the server stops it.
+function collidePredicted(c) {
+  const R = snap.islandR;
+  for (const o of room.obstacles || []) {
+    if (Math.hypot(o.x, o.z) >= R - 0.3) continue;
+    const dx = c.x - o.x, dz = c.z - o.z;
+    const d = Math.hypot(dx, dz) || 1e-4;
+    const minD = o.r + PRED.body * 0.8;
+    if (d >= minD) continue;
+    const nx = dx / d, nz = dz / d;
+    c.x = o.x + nx * minD;
+    c.z = o.z + nz * minD;
+    const vn = c.pvx * nx + c.pvz * nz;
+    if (vn < 0) { c.pvx -= vn * nx * 1.3; c.pvz -= vn * nz * 1.3; }
+  }
+  const d = Math.hypot(c.x, c.z);
+  const lim = R - (room.guardInset ?? 0.25) - 0.6;
+  if (d <= lim || d > R + 0.4) return;
+  const a = Math.atan2(c.x, c.z);
+  if ((snap.gaps || []).some(([gc, gh]) => Math.abs(Math.atan2(Math.sin(a - gc), Math.cos(a - gc))) < gh)) return;
+  const nx = c.x / d, nz = c.z / d;
+  c.x = nx * lim; c.z = nz * lim;
+  const vn = c.pvx * nx + c.pvz * nz;
+  if (vn > 0) { c.pvx -= vn * nx * 1.3; c.pvz -= vn * nz * 1.3; }
 }
 const myMove = { x: 0, z: 0 };let rtt = -1;
 setInterval(() => {
@@ -1283,22 +1353,34 @@ function predictMe(c, s, dt) {
   if (!canPredict(s)) { c.pred = false; return false; }
   const now = performance.now();
   if (!c.pred) { c.pred = true; c.pvx = s.vx; c.pvz = s.vz; c.ex = c.ez = 0; c.hist = []; c.reconT = snapTime; }
-  const k = Math.min(1, (s.g ? PRED.accel : PRED.airAccel) * (s.rv ? 0.5 : 1) * dt);
-  c.pvx += (myMove.x * s.ms - c.pvx) * k;
-  c.pvz += (myMove.z * s.ms - c.pvz) * k;
+  // Connection stuck: freeze with the rest of the world rather than run off on stale data.
+  if (now - snapTime > STALL_MS) return true;
+
+  // Movement is relative to the water, exactly like the server, so the current carries me too.
+  const flow = s.y < 0.4 && !(invLeft() > 0) ? riverFlowAt(c.x, c.z) : null;
+  const fx = flow ? flow.dx * PRED.flow : 0, fz = flow ? flow.dz * PRED.flow : 0;
+  const k = Math.min(1, (s.g ? PRED.accel : PRED.airAccel) * (flow ? 0.5 : 1) * dt);
+  c.pvx += (myMove.x * s.ms - (c.pvx - fx)) * k;
+  c.pvz += (myMove.z * s.ms - (c.pvz - fz)) * k;
   c.x += c.pvx * dt;
   c.z += c.pvz * dt;
 
   if (c.reconT !== snapTime) {
     c.reconT = snapTime;
-    const h = predAt(c.hist, snapTime - Math.max(0, rtt));
-    c.ex = s.x - (h ? h.x : c.x);
-    c.ez = s.z - (h ? h.z : c.z);
-    if (Math.hypot(c.ex, c.ez) > PRED_SNAP) { c.x += c.ex; c.z += c.ez; c.ex = c.ez = 0; c.hist.length = 0; c.pvx = s.vx; c.pvz = s.vz; }
+    // Compare against where I was when the server produced this snapshot (its send time, not when
+    // it happened to arrive), and skip ones that turned up late in a burst.
+    const sent = snapSentAt ?? snapTime;
+    if (snapTime - sent < LATE_MS) {
+      const h = predAt(c.hist, sent - Math.max(0, rtt));
+      c.ex = s.x - (h ? h.x : c.x);
+      c.ez = s.z - (h ? h.z : c.z);
+      if (Math.hypot(c.ex, c.ez) > PRED_SNAP) { c.x += c.ex; c.z += c.ez; c.ex = c.ez = 0; c.hist.length = 0; c.pvx = s.vx; c.pvz = s.vz; }
+    }
   }
   const ke = 1 - Math.exp(-dt * 8);
   const dx = c.ex * ke, dz = c.ez * ke;
   c.x += dx; c.z += dz; c.ex -= dx; c.ez -= dz;
+  collidePredicted(c);
   for (const h of c.hist) { h.x += dx; h.z += dz; }
   c.hist.push({ t: now, x: c.x, z: c.z });
   while (c.hist.length > 2 && c.hist[0].t < now - 1000) c.hist.shift();
@@ -1993,7 +2075,7 @@ $('playBtn').onclick = () => {
   wantedAnimal = myAnimal;
   myName = getName();
   unlockVideoSound();
-  socket.emit('join', { code: ROOM_CODE, name: myName, animal: myAnimal });
+  socket.emit('join', { code: ROOM_CODE, name: myName, animal: myAnimal, sid: SESSION_ID });
 };
 nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('playBtn').click(); });
 
@@ -2112,11 +2194,16 @@ function renderLobby() {
   markPicker();
 }
 
+// Called on every snapshot, but the DOM is only rebuilt when something on it actually changed.
+let scoreboardKey = '';
 function renderScoreboard() {
   if (!room) return;
+  const states = new Map((snap?.players || []).map((p) => [p.id, p.st === 'out' || p.fl]));
+  const key = room.phase + '|' + myId + '|' + room.players.map((p) => `${p.id}:${p.name}:${p.animal}:${p.score}:${teamOf(p)}:${states.get(p.id) ? 1 : 0}`).join(',');
+  if (key === scoreboardKey) return;
+  scoreboardKey = key;
   const sb = $('scoreboard');
   sb.innerHTML = '';
-  const states = new Map((snap?.players || []).map((p) => [p.id, p.st === 'out' || p.fl]));
   const teams = room.players.some((p) => teamOf(p) >= 0);
   let lastTeam = null;
   [...room.players].sort((a, b) => (teams ? a.team - b.team : 0) || b.score - a.score).forEach((p) => {
@@ -2165,6 +2252,8 @@ function onPhase(phase) {
   if (phase === 'loading') {
     closeSecret();
     showLoading();
+    // Compile the round's shaders behind the loading screen instead of hitching mid-fight.
+    requestAnimationFrame(() => renderer.compileAsync?.(scene, camera).catch(() => {}));
   } else {
     hideLoading();
     if (phase !== 'lobby') videoLoad = false;
@@ -2206,10 +2295,13 @@ function setBanner(text, sub = '') {
 // ---------- State sync ----------
 let lastCount = -1;
 socket.on('state', (s) => {
+  // Out-of-order leftovers are dropped (a big jump back means the server restarted).
+  if (snap && s.t <= snap.t && s.t > snap.t - 1) return;
   snap = s;
   snapTime = performance.now();
   if (s.phase === 'lobby') snapBuf.length = 0;
   else bufferSnapshot(s);
+  snapSentAt = clockOffset == null ? null : (s.t - clockOffset) * 1000;
   if (s.phase !== 'lobby') {
     for (const p of s.players) {
       const c = critters.get(p.id);
@@ -2221,7 +2313,6 @@ socket.on('state', (s) => {
       c.s = p;
     }
   }
-  for (const e of s.events) handleEvent(e);
 
   if (s.phase === 'countdown') {
     const n = Math.ceil(s.countdown - s.phaseTime);
@@ -2244,6 +2335,33 @@ socket.on('state', (s) => {
   }
   renderScoreboard();
 });
+
+socket.on('ev', (list) => { for (const e of list) handleEvent(e); });
+
+// ---------- Connection drops: keep the same critter if the server still has it, else rejoin ----------
+const netWarn = document.createElement('div');
+netWarn.id = 'netWarn';
+netWarn.className = 'hidden';
+netWarn.textContent = 'Reconnecting…';
+document.body.append(netWarn);
+function rejoin() {
+  if (!myId) return;
+  myId = null;
+  socket.emit('join', { code: ROOM_CODE, name: myName, animal: wantedAnimal || myAnimal, sid: SESSION_ID });
+}
+socket.on('connect', () => {
+  snapBuf.length = 0;
+  clockOffset = null;
+  if (myId && !socket.recovered) rejoin();
+});
+socket.on('rejoin', rejoin);
+let netWarnOn = false;
+function updateNetWarn(now, playing) {
+  const on = !!room && (!socket.connected || (playing && now - snapTime > 1500));
+  if (on === netWarnOn) return;
+  netWarnOn = on;
+  netWarn.classList.toggle('hidden', !on);
+}
 
 // True when this fall leaves a single player (or team) standing: time for the slow-mo finish.
 function lastStanding(id) {
@@ -2602,7 +2720,8 @@ if (isTouch) {
 let lastSent = '';
 let lastSendTime = 0;
 function sendInput(now) {
-  if (!myId) { punchQueued = jumpQueued = kickQueued = fireQueued = false; return; }
+  // Nothing is sent while disconnected: socket.io would queue it and replay stale presses on reconnect.
+  if (!myId || !socket.connected) { punchQueued = jumpQueued = kickQueued = fireQueued = false; return; }
   let x = 0, z = 0;
   if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
   if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
@@ -3255,6 +3374,7 @@ function frame(now) {
   time += dt;
 
   const playing = room && room.phase !== 'lobby' && snap && snap.phase !== 'lobby';
+  updateNetWarn(now, playing);
   watchFrameRate(rawDt, playing);
   assignDetail(dt);
   const R = playing ? snap.islandR : ISLAND_MAX;

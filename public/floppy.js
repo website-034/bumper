@@ -330,12 +330,8 @@ export function makeFloppy(rig, { body, headFur, flops = [], furGroups = [] }) {
       // Fur trails fast motion: outer shells shift back against the velocity.
       const lag = full ? 1 : 0;
       for (const g of furGroups) {
-        const len = g.userData.fur || 0.06, n = g.children.length - 1;
-        const kx = -Math.max(-8, Math.min(8, lvx)) * len * 0.07 * lag, kz = -Math.max(-8, Math.min(8, lvz)) * len * 0.07 * lag;
-        for (let i = 1; i <= n; i++) {
-          const t = (i / n) * (i / n);
-          g.children[i].position.set(kx * t, 0, kz * t);
-        }
+        const len = g.userData.fur || 0.06;
+        g.userData.setLag?.(-Math.max(-8, Math.min(8, lvx)) * len * 0.07 * lag, -Math.max(-8, Math.min(8, lvz)) * len * 0.07 * lag);
       }
       fl.slack = slack;
       fl.full = full;
