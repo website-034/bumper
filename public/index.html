@@ -27,10 +27,10 @@
     <h1 class="title"><span>Bumper</span> <span>Buddies</span></h1>
     <p class="subtitle">Punch, grab &amp; toss your friends off the island!</p>
     <input id="nameInput" maxlength="14" placeholder="Your name" autocomplete="off" />
+    <input id="codeInput" maxlength="20" placeholder="Room code" autocomplete="off" autocapitalize="off" spellcheck="false" />
     <div class="picker-label">Pick your critter</div>
     <div id="animalPicker" class="animal-picker"></div>
     <button id="playBtn" class="btn primary">Play</button>
-    <p class="hint">Everyone plays together in room <b>ghouse</b></p>
     <p id="menuError" class="error"></p>
   </div>
 
@@ -100,6 +100,7 @@
   </div>
   <div id="joyBase" class="hidden"><div id="joyKnob"></div></div>
   <div id="topButtons">
+    <button id="homeBtn" class="hidden" aria-label="Leave game">🏠</button>
     <button id="viewBtn" class="hidden" aria-label="Switch camera">🏝️ Arena</button>
     <button id="fullscreenBtn" class="hidden" aria-label="Fullscreen">⛶</button>
   </div>

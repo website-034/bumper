@@ -240,6 +240,9 @@ input:focus { border-color: #c7b8ff; }
   box-shadow: 0 4px 12px rgba(90, 74, 107, 0.15);
 }
 #fullscreenBtn { font-size: 24px !important; line-height: 1; }
+#homeBtn { font-size: 20px; }
+#homeBtn.confirm { font-size: 15px; color: #fff; background: #f07a8f; }
+#codeInput { text-transform: lowercase; }
 #rotateHint {
   position: fixed;
   inset: 0;

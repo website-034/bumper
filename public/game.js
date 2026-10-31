@@ -1935,7 +1935,6 @@ function updateEffects(dt) {
 }
 
 // ---------- Menu / lobby UI ----------
-const ROOM_CODE = 'ghouse';
 let wantedAnimal = null;
 const nameInput = $('nameInput');
 nameInput.value = localStorage.getItem('bb-name') || '';
@@ -2007,16 +2006,41 @@ $('fullscreenBtn').onclick = goFullscreen;
 document.addEventListener('fullscreenchange', updateScreenUi);
 window.addEventListener('resize', updateScreenUi);
 updateScreenUi();
-// There is a single room, so Play always joins it (creating it if nobody is there yet).
+// There is a single room, but players still need its code to get in.
+const codeInput = $('codeInput');
+let roomCode = '';
 $('playBtn').onclick = () => {
+  const code = codeInput.value.trim().toLowerCase();
+  if (!code) { showError('Enter the room code'); codeInput.focus(); return; }
   initAudio();
   goFullscreen();
   wantedAnimal = myAnimal;
   myName = getName();
   unlockVideoSound();
-  socket.emit('join', { code: ROOM_CODE, name: myName, animal: myAnimal, sid: SESSION_ID });
+  roomCode = code;
+  socket.emit('join', { code, name: myName, animal: myAnimal, sid: SESSION_ID });
 };
-nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('playBtn').click(); });
+nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') codeInput.focus(); });
+codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('playBtn').click(); });
+
+// Home: tap once to arm, again to leave for good (a stray tap mid-fight shouldn't quit).
+{
+  const btn = $('homeBtn');
+  let armT = 0;
+  btn.onclick = () => {
+    if (!btn.classList.contains('confirm')) {
+      btn.classList.add('confirm');
+      btn.textContent = 'Leave?';
+      clearTimeout(armT);
+      armT = setTimeout(() => { btn.classList.remove('confirm'); btn.textContent = '🏠'; }, 2500);
+      return;
+    }
+    socket.emit('leave');
+    socket.disconnect();
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    setTimeout(() => location.replace(location.pathname), 150);
+  };
+}
 
 // A host playing on localhost needs to hand phones the laptop's Wi-Fi address instead.
 const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
@@ -2026,7 +2050,7 @@ if (isLocalHost) {
     if (urls.length) { shareOrigin = urls[0]; renderShareUrl(); }
   }).catch(() => {});
 }
-function inviteLink() { return `${shareOrigin}/?room=${ROOM_CODE}`; }
+function inviteLink() { return `${shareOrigin}/`; }
 function renderShareUrl() {
   if (!room) return;
   $('shareUrl').textContent = inviteLink().replace(/^https?:\/\//, '');
@@ -2052,10 +2076,11 @@ function showError(msg) {
 socket.on('errorMsg', showError);
 socket.on('joined', ({ code, id }) => {
   myId = id;
-  history.replaceState(null, '', `?room=${code.toLowerCase()}`);
+  roomCode = code;
   $('menu').classList.add('hidden');
   $('hud').classList.remove('hidden');
   $('viewBtn').classList.remove('hidden');
+  $('homeBtn').classList.remove('hidden');
   updateScreenUi();
   if (isAdminName()) socket.emit('adm', { op: 'auth', pin: localStorage.getItem(PIN_KEY) || '' });
 });
@@ -2275,7 +2300,7 @@ document.body.append(netWarn);
 function rejoin() {
   if (!myId) return;
   myId = null;
-  socket.emit('join', { code: ROOM_CODE, name: myName, animal: wantedAnimal || myAnimal, sid: SESSION_ID });
+  socket.emit('join', { code: roomCode, name: myName, animal: wantedAnimal || myAnimal, sid: SESSION_ID });
 }
 socket.on('connect', () => {
   snapBuf.length = 0;
@@ -3016,7 +3041,7 @@ const PIN_KEY = 'bb-gpin';
 const INV_TIME = 10;
 const adm = { open: false, ok: false, s: null, pin: false, bad: false, locked: false, openedAt: 0, tried: '' };
 const isAdminName = () => myName.trim().toLowerCase() === ADMIN_NAME;
-const ADM_LIMITS = { blessed: [0, () => room?.players.length || 0], invCd: [0, () => 120], invUses: [1, () => 10] };
+const ADM_LIMITS = { blessed: [0, () => room?.players.length || 0], invCd: [0, () => 120], invUses: [1, () => 10], weapons: [0, () => 30] };
 let secretEl = null;
 
 socket.on('adm', (d) => {
@@ -3106,7 +3131,8 @@ function renderSecret() {
     + row('Include me in the draw', toggle('includeMe'), s.blessed > 0)
     + row('Invincibility button<small>🛡️ during play</small>', toggle('invBtn'))
     + row('Cooldown', stepper('invCd', `${s.invCd} s`, 5), s.invBtn)
-    + row('Uses per round', stepper('invUses', s.invUses, 1), s.invBtn);
+    + row('Uses per round', stepper('invUses', s.invUses, 1), s.invBtn)
+    + row(`Weapons on the island<small>${s.weapons ? 'Always this many' : 'Auto: one per player'}</small>`, stepper('weapons', s.weapons || 'Auto', 1));
 }
 
 // ---------- Private invincibility state (sent only to this player) ----------
@@ -3320,8 +3346,19 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 // Nothing is drawn while the page is hidden; the loop picks up again when it comes back.
+// Inputs stop being sent then, so let go of everything or the server keeps the last one held.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden || looping) return;
+  if (document.hidden) {
+    joy = { x: 0, y: 0, id: null };
+    touchGrab = false;
+    touchAim = { id: null, dx: 0, dy: 0 };
+    $('joyBase').classList.add('hidden');
+    for (const el of document.querySelectorAll('.tbtn.down')) el.classList.remove('down', 'aiming', 'cancel');
+    if (myId && socket.connected) socket.emit('input', { x: 0, z: 0, grab: false, aim: false });
+    lastSent = '';
+    return;
+  }
+  if (looping) return;
   looping = true;
   lastFrame = nextFrameAt = performance.now();
   requestAnimationFrame(frame);

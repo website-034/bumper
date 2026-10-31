@@ -95,6 +95,7 @@ const WEAPON_TOSS_VY = 3.5;
 // One weapon in play per player; lost ones come back after a short delay.
 const RESTOCK_MIN = 2;
 const RESTOCK_MAX = 4;
+const MAX_WEAPONS = 30;
 const TEAM_SIZES = [0, 2, 3, 4];
 const FALL_OUT_Y = -14;
 const LOADING_TIME = 1;
@@ -111,7 +112,7 @@ const ADMIN_PIN = process.env.GHOUSE_PIN || '';
 const PIN_MAX_FAILS = 5;
 const PIN_LOCK_MS = 60000;
 const pinFails = new Map(); // ip -> { n, until }
-const savedSecret = { blessed: 0, includeMe: true, invBtn: false, invCd: 30, invUses: 2 };
+const savedSecret = { blessed: 0, includeMe: true, invBtn: false, invCd: 30, invUses: 2, weapons: 0 };
 const isAdmin = (p) => !!p && !p.isBot && p.name.trim().toLowerCase() === ADMIN_NAME;
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest();
 const pinMatches = (pin) => crypto.timingSafeEqual(sha(pin), sha(ADMIN_PIN));
@@ -491,7 +492,7 @@ function startRound(room) {
     p.late = false;
     p.invT = p.invCdT = p.invUsed = 0;
   });
-  const n = roundSize(room);
+  const n = weaponTarget(room);
   for (let k = 0; room.items.length < n && k < n * 5; k++) spawnItem(room, true);
   drawBlessed(room, list);
   setPhase(room, 'loading');
@@ -881,16 +882,18 @@ function breakItem(room, it, x, y, z) {
 
 // Everyone who started this round and is still connected, bots included.
 const roundSize = (room) => [...room.players.values()].filter((p) => !p.late && !p.away).length;
+// The admin can fix the number of weapons in play; 0 means one per player.
+const weaponTarget = (room) => room.secret.weapons || roundSize(room);
 const kosLeft = (it) => WEAPONS.gloves.kos - it.kos;
 const heldGlovesLeft = (room, p) => {
   const it = weaponItem(room, p);
   return it && it.type === 'gloves' ? kosLeft(it) : 0;
 };
 
-// Equal odds for each weapon, but no more than one pair of gloves per four players.
+// Equal odds for each weapon, but no more than one pair of gloves per four weapons in play.
 function pickWeaponType(room) {
   const gloves = room.items.filter((it) => it.type === 'gloves').length;
-  const pool = gloves < Math.ceil(roundSize(room) / 4) ? SPAWN_TYPES : SPAWN_TYPES.filter((t) => t !== 'gloves');
+  const pool = gloves < Math.ceil(weaponTarget(room) / 4) ? SPAWN_TYPES : SPAWN_TYPES.filter((t) => t !== 'gloves');
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
@@ -915,9 +918,9 @@ function spawnItem(room, onGround = false) {
 }
 
 // Weapons in play (ground, held and airborne) track the round size: each one lost is replaced
-// after a few seconds, but only while there are fewer weapons than players.
+// after a few seconds, but only while there are fewer weapons than the target.
 function stepRestock(room, dt) {
-  const want = roundSize(room);
+  const want = weaponTarget(room);
   room.restock = room.restock.map((t) => t - dt);
   const due = room.restock.filter((t) => t <= 0).length;
   room.restock = room.restock.filter((t) => t > 0);
@@ -1583,6 +1586,7 @@ function applySecret(room, s) {
   if ('invBtn' in s) sec.invBtn = !!s.invBtn;
   if ('invCd' in s) sec.invCd = clampInt(s.invCd, 0, 120, sec.invCd);
   if ('invUses' in s) sec.invUses = clampInt(s.invUses, 1, 10, sec.invUses);
+  if ('weapons' in s) sec.weapons = clampInt(s.weapons, 0, MAX_WEAPONS, sec.weapons);
 }
 
 // One bad tick must never freeze the round: log it (rate-limited) and keep going.
@@ -1679,10 +1683,11 @@ io.on('connection', (socket) => {
   }
 
   function join(r, name, animal, sid) {
-    // Same browser tab coming back on a new connection: drop its stranded old critter first.
     const sess = typeof sid === 'string' ? sid.slice(0, 40) : '';
-    if (sess) for (const p of [...r.players.values()]) if (p.away && p.sid === sess) removePlayer(r, p.id);
-    if (!rooms.has(r.code)) r = getRoom();
+    // Same browser tab on a new connection: carry on as its old critter. Phones often reconnect
+    // before the server has noticed the old connection died, so this can't wait for it to go away.
+    const old = sess && [...r.players.values()].find((p) => !p.isBot && p.sid === sess && p.id !== socket.id);
+    if (old) return takeOver(r, old);
     if (r.players.size >= MAX_PLAYERS) return socket.emit('errorMsg', 'Room is full');
     room = r;
     socket.join(r.code);
@@ -1691,16 +1696,45 @@ io.on('connection', (socket) => {
     broadcastRoom(r);
   }
 
-  // Create and join both land in the single room.
-  socket.on('create', ({ name, animal, sid } = {}) => {
-    if (room) return;
-    join(getRoom(), name, animal, sid);
-  });
+  function takeOver(r, p) {
+    const oldId = p.id, id = socket.id;
+    clearTimeout(p.awayTimer);
+    r.players.delete(oldId);
+    p.id = id;
+    p.away = false;
+    clearInput(p);
+    r.players.set(id, p);
+    for (const o of r.players.values()) {
+      if (o.holding === oldId) o.holding = id;
+      if (o.heldBy === oldId) o.heldBy = id;
+    }
+    for (const it of r.items) {
+      if (it.holder === oldId) it.holder = id;
+      if (it.thrownBy === oldId) it.thrownBy = id;
+    }
+    for (const s of r.shots) if (s.owner === oldId) s.owner = id;
+    if (r.hostId === oldId) r.hostId = id;
+    if (r.winnerId === oldId) r.winnerId = id;
+    room = r;
+    socket.join(r.code);
+    io.sockets.sockets.get(oldId)?.disconnect(true);
+    socket.emit('joined', { code: r.code, id });
+    broadcastRoom(r);
+  }
 
   socket.on('join', ({ code, name, animal, sid } = {}) => {
     if (room) return;
-    if (code && String(code).toLowerCase().trim() !== ROOM_CODE) return socket.emit('errorMsg', 'Room not found');
+    if (String(code || '').toLowerCase().trim() !== ROOM_CODE) return socket.emit('errorMsg', 'Wrong room code');
     join(getRoom(), name, animal, sid);
+  });
+
+  // Home button: gone for good, no grace period.
+  socket.on('leave', () => {
+    if (!room) return;
+    const r = room;
+    room = null;
+    socket.leave(r.code);
+    removePlayer(r, socket.id);
   });
 
   socket.on('rtt', (cb) => { if (typeof cb === 'function') cb(); });
