@@ -63,7 +63,11 @@ const SHRINK_DELAY = 300;
 const SHRINK_DURATION = 120;
 const SHRINK_WARN = 15;
 const SPAWN_R = 13;
-const PICKUP_RANGE = 1.9;
+// Weapons this close show up as pick-up icons on the player's screen; the server allows a little
+// extra for movement during the round trip.
+const PICKUP_RANGE = 2.6;
+const PICKUP_SLACK = 0.8;
+const AUTO_THROW_RANGE = 9;
 const OBSTACLE_COUNT = 32;
 // The whole edge is fenced except where the river spills off it.
 const GUARD_INSET = 0.25;
@@ -77,11 +81,6 @@ const HANG_Y = -0.9;
 const HANG_CLIMB = 2.6;
 const HANG_MASH = 0.12;
 // Kicks: quick startup, modest shove.
-const KICK_STARTUP = 0.1;
-const KICK_COOLDOWN = 0.7;
-const KICK_RANGE = 2.2;
-const KICK_KNOCK = 7;
-const KICK_DIZZY = 15;
 // Aimed releases stay buffered briefly so a throw isn't lost to a cooldown.
 const FIRE_BUFFER = 0.35;
 const AIM_TURN = 22;
@@ -225,7 +224,6 @@ function addPlayer(room, id, name, animal, isBot = false) {
     holdT: 0,
     weapon: null,
     prevGrab: false,
-    grabLock: false,
     swingWind: 0,
     spinT: 0,
     spinHits: null,
@@ -237,15 +235,12 @@ function addPlayer(room, id, name, animal, isBot = false) {
     hangA: 0,
     climbT: 0,
     hangUsed: false,
-    kickCd: 0,
-    kickWind: 0,
-    kickT: 0,
     aim: false,
     fireQ: 0,
     fireA: 0,
     late: room.phase !== 'lobby',
     team: -1,
-    input: { x: 0, z: 0, grab: false, punch: false, jump: false, kick: false, fire: false, aim: false, ax: 0, az: 1 },
+    input: { x: 0, z: 0, grab: false, punch: false, jump: false, fire: false, auto: false, pick: 0, aim: false, ax: 0, az: 1 },
     botT: 0,
     // Private: only ever sent to this player's own socket.
     invT: 0,
@@ -273,7 +268,7 @@ function roomInfo(room) {
     guardInset: GUARD_INSET,
     // Movement constants for client-side prediction of the local player.
     move: {
-      accel: GROUND_ACCEL, airAccel: AIR_ACCEL, jump: JUMP_VEL, gravity: GRAVITY, punchCd: PUNCH_COOLDOWN, kickCd: KICK_COOLDOWN, aimTurn: AIM_TURN,
+      accel: GROUND_ACCEL, airAccel: AIR_ACCEL, jump: JUMP_VEL, gravity: GRAVITY, punchCd: PUNCH_COOLDOWN, aimTurn: AIM_TURN, pickRange: PICKUP_RANGE,
       body: BODY_R, flow: RIVER_FLOW, bridge: BRIDGE_HALF_LEN,
     },
     // Launch profiles so the client's aim preview matches the real arcs.
@@ -281,8 +276,6 @@ function roomInfo(room) {
       g: GRAVITY,
       player: { s: THROW_SPEED, vy: THROW_VY, y: 1.25, off: THROW_OFF, carry: 0.5 },
       weapon: { s: WEAPON_TOSS_SPEED, vy: WEAPON_TOSS_VY, y: 1.1, off: 0.9, carry: 0.5 },
-      blaster: { line: WEAPONS.blaster.speed * WEAPONS.blaster.life, y: 1.15 },
-      kick: { line: KICK_RANGE + 1.6, y: 0.15 },
     },
     players: [...room.players.values()].map((p) => ({
       id: p.id, name: p.name, animal: p.animal, score: p.score, isBot: p.isBot, team: p.team,
@@ -458,9 +451,8 @@ function resetBody(p) {
   p.holding = p.heldBy = null;
   p.holdT = 0;
   p.weapon = null;
-  p.grabLock = false;
   p.swingWind = p.spinT = p.heaveT = p.wakeT = 0;
-  p.thrownT = p.climbT = p.kickCd = p.kickWind = p.kickT = p.fireQ = 0;
+  p.thrownT = p.climbT = p.fireQ = 0;
   p.hang = p.hangUsed = p.aim = false;
 }
 
@@ -601,7 +593,7 @@ function release(room, holder, thrown) {
 
 const weaponItem = (room, p) => (p.weapon ? room.items.find((it) => it.id === p.weapon) : null);
 
-// Shared by punches, kicks, weapon swings, foam balls and thrown weapons.
+// Shared by punches, weapon swings, foam balls and thrown weapons.
 // Knockback never carries anyone over the fence; only hanging players get knocked off it.
 // Returns true only when this hit knocked the target out.
 function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz, w = '') {
@@ -617,7 +609,7 @@ function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz,
   o.vy = Math.max(o.vy, 3 + knockBase * 0.12);
   o.grounded = false;
   o.stunT = Math.max(o.stunT, 0.35);
-  o.swingWind = o.spinT = o.kickWind = 0;
+  o.swingWind = o.spinT = 0;
   if (Math.hypot(o.x, o.z) < fenceR(room)) o.thrownT = 0;
   if (o.holding) release(room, o, false);
 
@@ -680,6 +672,11 @@ function spinHits(room, p, w) {
 // Aiming players pick their own direction, so there is no assist.
 function aimAssist(room, p, range, minDot) {
   if (p.aim || p.fireQ > 0) return;
+  const best = aimTarget(room, p, range, minDot);
+  if (best) p.face = Math.atan2(best.x - p.x, best.z - p.z);
+}
+
+function aimTarget(room, p, range, minDot) {
   const fx = Math.sin(p.face), fz = Math.cos(p.face);
   let best = null, bestScore = Infinity;
   for (const o of room.players.values()) {
@@ -692,7 +689,7 @@ function aimAssist(room, p, range, minDot) {
     const score = d * (2 - dot) + (sameTeam(p, o) ? 100 : 0);
     if (score < bestScore) { bestScore = score; best = o; }
   }
-  if (best) p.face = Math.atan2(best.x - p.x, best.z - p.z);
+  return best;
 }
 
 function doPunch(room, p) {
@@ -766,19 +763,6 @@ function stepSpin(room, p, dt) {
   }
 }
 
-// ---- Kicks ----
-function startKick(room, p) {
-  aimAssist(room, p, KICK_RANGE + 0.4, 0.3);
-  p.kickCd = KICK_COOLDOWN;
-  p.kickWind = KICK_STARTUP;
-  p.kickT = 0.35;
-  room.events.push({ t: 'kick', id: p.id });
-}
-
-function kickStrike(room, p) {
-  meleeHits(room, p, KICK_RANGE, 0.4, KICK_KNOCK, KICK_DIZZY, 'kick');
-}
-
 // ---- Hanging on the fence ----
 // Thrown players dropping just past the fence catch the rail (holding GRAB reaches further).
 // Knocked-out players are out cold and can't, so a knockout and a throw finishes someone.
@@ -843,21 +827,16 @@ function letGo(room, p, fx, fz) {
   room.events.push({ t: 'letgo', id: p.id });
 }
 
-// ---- THROW button: release in the aimed direction ----
+// ---- THROW button: hurl the held weapon (blaster included) in the aimed direction ----
+// Carried players are thrown by letting go of GRAB instead.
 function aimedRelease(room, p) {
-  if (p.holding) { release(room, p, true); return true; }
   const it = weaponItem(room, p);
-  if (!it || p.heaveT > 0) return !it;
-  const w = WEAPONS[it.type];
-  if (w.ranged) {
-    if (p.punchCd > 0) return false;
-    weaponAttack(room, p);
-  } else {
-    dropWeapon(room, p, true);
-    p.punchCd = Math.max(p.punchCd, 0.3);
-    p.punchT = 0.25;
-    p.punchArm = 1 - p.punchArm;
-  }
+  if (!it || p.holding) return true;
+  if (p.heaveT > 0) return false;
+  dropWeapon(room, p, true);
+  p.punchCd = Math.max(p.punchCd, 0.3);
+  p.punchT = 0.25;
+  p.punchArm = 1 - p.punchArm;
   return true;
 }
 
@@ -930,20 +909,19 @@ function stepRestock(room, dt) {
   while (room.items.length + room.restock.length < want) room.restock.push(RESTOCK_MIN + Math.random() * (RESTOCK_MAX - RESTOCK_MIN));
 }
 
-function tryPickup(room, p) {
-  let best = null, bestD = PICKUP_RANGE;
-  for (const it of room.items) {
-    if (it.holder || it.y > 1.4 || it.y < -0.5) continue;
-    const d = Math.hypot(it.x - p.x, it.z - p.z);
-    if (d < bestD) { bestD = d; best = it; }
-  }
-  if (!best) return false;
-  best.holder = p.id;
-  best.thrownBy = null;
-  p.weapon = best.id;
+// Tapping a weapon's icon picks that one up; a weapon already in hand is put down first.
+function pickItem(room, p, id) {
+  if (p.holding || p.heaveT > 0 || p.swingWind > 0 || p.spinT > 0) return false;
+  const it = room.items.find((o) => o.id === id);
+  if (!it || it.holder || it.y > 1.4 || it.y < -0.5) return false;
+  if (Math.hypot(it.x - p.x, it.z - p.z) > PICKUP_RANGE + PICKUP_SLACK) return false;
+  if (p.weapon) dropWeapon(room, p, false);
+  it.holder = p.id;
+  it.thrownBy = null;
+  p.weapon = it.id;
   p.punchCd = Math.max(p.punchCd, 0.45);
   p.heaveT = 0.45;
-  room.events.push({ t: 'pickup', id: p.id, w: best.type });
+  room.events.push({ t: 'pickup', id: p.id, w: it.type });
   return true;
 }
 
@@ -1061,13 +1039,14 @@ function tryGrab(room, p) {
     if (dist > 0.01 && (dx * fx + dz * fz) / dist < 0.3) continue;
     if (dist < bestD) { bestD = dist; best = o; }
   }
-  if (!best) return;
+  if (!best) return false;
   if (best.holding) release(room, best, false);
   dropWeapon(room, best, false);
   p.holding = best.id;
   best.heldBy = p.id;
   best.holdT = 0;
   room.events.push({ t: 'grab', id: p.id, target: best.id });
+  return true;
 }
 
 // Bots aim straight at whatever they want to hit.
@@ -1088,7 +1067,8 @@ function botThink(room, bot, dt) {
   if (bot.botT > 0) return;
   bot.botT = 0.18 + Math.random() * 0.15;
   const inp = bot.input;
-  inp.punch = inp.jump = inp.kick = inp.fire = inp.aim = false;
+  inp.punch = inp.jump = inp.fire = inp.auto = inp.aim = false;
+  inp.pick = 0;
 
   if (bot.heldBy) {
     inp.punch = Math.random() < 0.35;
@@ -1111,14 +1091,10 @@ function botThink(room, bot, dt) {
   const R = room.islandR;
 
   if (bot.holding) {
-    // Carry the victim to the fence (or the river gap) and throw them over.
+    // Carry the victim to the fence (or the river gap), facing out, and let go to throw them over.
     inp.x = bot.x / distC;
     inp.z = bot.z / distC;
-    inp.grab = true;
-    if (distC > fenceR(room) - 1.9) {
-      botAim(inp, bot.x, bot.z);
-      inp.fire = true;
-    }
+    inp.grab = distC < fenceR(room) - 1.9;
     return;
   }
 
@@ -1134,8 +1110,7 @@ function botThink(room, bot, dt) {
     inp.grab = false;
     if (d < 2.1) {
       botAim(inp, dx, dz);
-      if (bot.kickCd <= 0) inp.kick = true;
-      else inp.punch = true;
+      inp.punch = true;
     }
     return;
   }
@@ -1178,7 +1153,8 @@ function botThink(room, bot, dt) {
       const len = itemD || 1;
       inp.x = (item.x - bot.x) / len;
       inp.z = (item.z - bot.z) / len;
-      inp.grab = itemD < 1.6 ? !inp.grab : false;
+      inp.grab = false;
+      if (itemD < PICKUP_RANGE - 0.4) inp.pick = item.id;
       return;
     }
   }
@@ -1197,14 +1173,15 @@ function botThink(room, bot, dt) {
     inp.grab = false;
     const facing = (dx * Math.sin(bot.face) + dz * Math.cos(bot.face)) / len;
     const dazed = target.koT > 0;
-    if (dazed && best < 2.6) {
-      // Hitting again would waste the knockout: drop it and grab.
-      dropWeapon(room, bot, false);
+    if (dazed && best < GRAB_RANGE) {
+      // Hitting again would waste the knockout: grab them (the weapon gets put down).
+      inp.grab = true;
       return;
     }
     if (w.ranged) {
       if (best < 6) { inp.x *= 0.2; inp.z *= 0.2; }
-      if (best < 12 && bot.punchCd <= 0 && Math.random() < 0.4) { botAim(inp, dx, dz); inp.fire = true; }
+      if (best < 12) botAim(inp, dx, dz);
+      if (best < 12 && bot.punchCd <= 0 && facing > 0.9 && Math.random() < 0.5) inp.punch = true;
     } else if (w.spin) {
       const n = enemiesNear(room, bot, w.radius - 0.4).length;
       if (n >= 2 || (n === 1 && Math.random() < 0.25)) inp.punch = true;
@@ -1223,13 +1200,8 @@ function botThink(room, bot, dt) {
   }
 
   if (best < 1.9) {
-    // Kick enemies standing between us and the river.
-    const rvNow = riverDist(room, target.x, target.z);
-    const towardRiver = rvNow < RIVER_HALF + 3 && riverDist(room, target.x + (dx / len) * 2, target.z + (dz / len) * 2) < rvNow;
-    if (towardRiver && bot.kickCd <= 0) { botAim(inp, dx, dz); inp.kick = true; }
-    else if (((target.koT > 0 || target.dizzy > 60) && Math.random() < 0.5) || Math.random() < 0.05) inp.grab = true;
+    if (((target.koT > 0 || target.dizzy > 60) && Math.random() < 0.5) || Math.random() < 0.05) inp.grab = true;
     else if (Math.random() < 0.3) inp.punch = true;
-    else if (bot.kickCd <= 0 && Math.random() < 0.1) inp.kick = true;
   } else {
     inp.grab = false;
   }
@@ -1248,8 +1220,6 @@ function stepPhysics(room, dt) {
     p.punchCd = Math.max(0, p.punchCd - dt);
     p.punchT = Math.max(0, p.punchT - dt);
     p.grabCd = Math.max(0, p.grabCd - dt);
-    p.kickCd = Math.max(0, p.kickCd - dt);
-    p.kickT = Math.max(0, p.kickT - dt);
     p.thrownT = Math.max(0, p.thrownT - dt);
     p.fireQ = Math.max(0, p.fireQ - dt);
     p.mashT = Math.max(0, (p.mashT || 0) - dt);
@@ -1261,23 +1231,26 @@ function stepPhysics(room, dt) {
     const inp = p.input;
     const grabPressed = inp.grab && !p.prevGrab;
     p.prevGrab = inp.grab;
-    if (!inp.grab) p.grabLock = false;
     p.aim = inp.aim;
     if (inp.fire) {
+      // A tap (no drag) throws at the nearest enemy roughly in front, else straight ahead.
+      const t = inp.auto && aimTarget(room, p, AUTO_THROW_RANGE, 0.5);
       p.fireQ = FIRE_BUFFER;
-      p.fireA = Math.atan2(inp.ax, inp.az);
-      inp.fire = false;
+      p.fireA = t ? Math.atan2(t.x - p.x, t.z - p.z) : Math.atan2(inp.ax, inp.az);
+      inp.fire = inp.auto = false;
     }
 
     if (p.heldBy) {
       if (inp.punch || inp.jump) { p.holdT += 0.3; p.mashT = 0.3; }
-      inp.punch = inp.jump = inp.kick = false;
+      inp.punch = inp.jump = false;
+      inp.pick = 0;
       p.fireQ = 0;
       continue;
     }
     if (p.hang) {
       stepHang(room, p, dt, inp.jump || grabPressed);
-      inp.punch = inp.jump = inp.kick = false;
+      inp.punch = inp.jump = false;
+      inp.pick = 0;
       p.fireQ = 0;
       continue;
     }
@@ -1290,13 +1263,6 @@ function stepPhysics(room, dt) {
       }
     }
     if (p.spinT > 0) stepSpin(room, p, dt);
-    if (p.kickWind > 0) {
-      if (!canAct(p)) p.kickWind = 0;
-      else {
-        p.kickWind -= dt;
-        if (p.kickWind <= 0) { p.kickWind = 0; kickStrike(room, p); }
-      }
-    }
 
     const rv = !p.falling && p.y < 0.4 && !p.heldBy ? riverAt(room, p.x, p.z) : null;
     p.inRiver = !!rv;
@@ -1323,7 +1289,6 @@ function stepPhysics(room, dt) {
       if (held) speed *= WEAPONS[held.type].carry;
       if (p.swingWind > 0 || p.punchT > 0 && held) speed *= 0.25;
       if (p.spinT > 0 && held) speed *= WEAPONS[held.type].spinSlow;
-      if (p.kickWind > 0 || p.kickT > 0) speed *= 0.5;
       if (p.heaveT > 0) speed *= 0.1;
       if (rv) speed *= RIVER_WADE;
       p.moveSpd = speed;
@@ -1337,20 +1302,14 @@ function stepPhysics(room, dt) {
         room.events.push({ t: 'jump', id: p.id });
       }
       if (p.fireQ > 0 && aimedRelease(room, p)) p.fireQ = 0;
-      if (inp.punch) {
-        if (p.holding) release(room, p, true);
-        else if (p.punchCd <= 0 && p.heaveT <= 0 && p.spinT <= 0) (p.weapon ? weaponAttack : doPunch)(room, p);
+      if (inp.punch && !p.holding && p.punchCd <= 0 && p.heaveT <= 0 && p.spinT <= 0) (p.weapon ? weaponAttack : doPunch)(room, p);
+      if (inp.pick) pickItem(room, p, inp.pick);
+      // GRAB: hold to grab and carry (a weapon in hand is put down), let go to throw them.
+      if (inp.grab && !p.holding && p.grabCd <= 0 && p.swingWind <= 0 && p.spinT <= 0) {
+        const wasArmed = !!p.weapon;
+        if (tryGrab(room, p) && wasArmed) dropWeapon(room, p, false);
       }
-      if (inp.kick && p.kickCd <= 0 && p.heaveT <= 0 && !p.holding && p.swingWind <= 0 && p.spinT <= 0) startKick(room, p);
-      if (grabPressed && p.weapon) {
-        dropWeapon(room, p, true);
-        p.grabLock = true;
-      } else if (grabPressed && !p.holding && tryPickup(room, p)) {
-        p.grabLock = true;
-      } else if (inp.grab && !p.holding && !p.weapon && !p.grabLock && p.grabCd <= 0) {
-        tryGrab(room, p);
-      }
-      if (!inp.grab && p.holding) release(room, p, false);
+      if (!inp.grab && p.holding) release(room, p, true);
     } else {
       if (p.holding) release(room, p, false);
       if (p.grounded) {
@@ -1361,7 +1320,7 @@ function stepPhysics(room, dt) {
     }
     inp.punch = false;
     inp.jump = false;
-    inp.kick = false;
+    inp.pick = 0;
 
     p.vx += flowX; p.vz += flowZ;
 
@@ -1540,7 +1499,6 @@ function snapshot(room) {
       w: weaponItem(room, p)?.type || '',
       sw: p.swingWind > 0 ? 1 : p.spinT > 0 ? 3 : p.punchT > 0 && p.weapon ? 2 : 0,
       sd: p.sweepSide,
-      kk: p.kickT > 0 ? 1 : 0,
       am: p.aim ? 1 : 0,
       hg: p.hang ? Math.max(0.01, r2(p.climbT / HANG_CLIMB)) : 0,
       lt: p.late ? 1 : 0,
@@ -1662,7 +1620,7 @@ function removePlayer(room, id) {
   broadcastRoom(room);
 }
 
-const clearInput = (p) => Object.assign(p.input, { x: 0, z: 0, grab: false, punch: false, jump: false, kick: false, fire: false, aim: false });
+const clearInput = (p) => Object.assign(p.input, { x: 0, z: 0, grab: false, punch: false, jump: false, fire: false, auto: false, pick: 0, aim: false });
 
 io.on('connection', (socket) => {
   let room = null;
@@ -1761,8 +1719,8 @@ io.on('connection', (socket) => {
     if (room.phase === 'playing') {
       if (inp.punch) p.input.punch = true;
       if (inp.jump) p.input.jump = true;
-      if (inp.kick) p.input.kick = true;
-      if (inp.fire) p.input.fire = true;
+      if (inp.fire) { p.input.fire = true; p.input.auto = !!inp.auto; }
+      if (Number.isInteger(inp.pick) && inp.pick > 0) p.input.pick = inp.pick;
     }
   });
 

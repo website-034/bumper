@@ -286,12 +286,11 @@ input:focus { border-color: #c7b8ff; }
   bottom: calc(22px + env(safe-area-inset-bottom));
   display: grid;
   grid-template-columns: repeat(3, auto);
-  grid-template-areas: "shield kick throw" "jump grab punch";
+  grid-template-areas: "shield . throw" "jump grab punch";
   gap: 10px 12px;
   align-items: end;
   justify-items: center;
 }
-#tKick { grid-area: kick; }
 #tThrow { grid-area: throw; }
 #tJump { grid-area: jump; }
 #tGrab { grid-area: grab; }
@@ -310,8 +309,8 @@ input:focus { border-color: #c7b8ff; }
 }
 #tGrab { background: rgba(160, 200, 255, 0.9); box-shadow: 0 6px 0 #7aa8e8; }
 #tJump { width: 60px; height: 60px; background: rgba(181, 234, 215, 0.95); box-shadow: 0 6px 0 #86c9b0; }
-#tKick { width: 64px; height: 64px; background: rgba(255, 196, 140, 0.92); box-shadow: 0 6px 0 #e09a5c; }
 #tThrow { position: relative; background: rgba(199, 184, 255, 0.92); box-shadow: 0 6px 0 #9b86e0; }
+#tThrow.off { opacity: 0.45; }
 #tThrow.armed { background: linear-gradient(160deg, #c7b8ff, #9b86e0); box-shadow: 0 6px 0 #7a64c4, 0 0 14px rgba(155, 134, 224, 0.7); }
 #tThrow .aimKnob {
   position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px;
@@ -320,7 +319,6 @@ input:focus { border-color: #c7b8ff; }
 }
 #tThrow.aiming .aimKnob { opacity: 1; }
 #tThrow.aiming .tlabel { opacity: 0.35; }
-#tThrow.aiming.cancel .aimKnob { background: rgba(255, 143, 163, 0.9); }
 .tbtn { text-align: center; line-height: 1.05; cursor: pointer; touch-action: none; transition: width 0.15s, height 0.15s, background 0.15s; }
 #tPunch.armed {
   width: 96px;
@@ -331,13 +329,57 @@ input:focus { border-color: #c7b8ff; }
   box-shadow: 0 6px 0 #d9822b, 0 0 18px rgba(255, 190, 80, 0.8);
   animation: glowPulse 1.1s ease-in-out infinite;
 }
-#tGrab.glow, #tKick.glow { animation: glowPulse 0.8s ease-in-out infinite; background: rgba(255, 214, 90, 0.95); box-shadow: 0 6px 0 #e0a830; }
-/* Short landscape phones: shrink the cluster so all five buttons fit above the bottom edge. */
+#tGrab.glow { animation: glowPulse 0.8s ease-in-out infinite; background: rgba(255, 214, 90, 0.95); box-shadow: 0 6px 0 #e0a830; }
+/* Short landscape phones: shrink the cluster so every button fits above the bottom edge. */
 @media (max-height: 430px) {
   #touchButtons { gap: 8px 10px; bottom: calc(14px + env(safe-area-inset-bottom)); }
   .tbtn { width: 64px; height: 64px; font-size: 13px; }
-  #tJump, #tKick { width: 54px; height: 54px; }
+  #tJump { width: 54px; height: 54px; }
   #tPunch.armed { width: 80px; height: 80px; margin: -8px; font-size: 16px; }
+}
+
+#weaponPicks {
+  position: fixed;
+  top: calc(66px + env(safe-area-inset-top));
+  right: calc(12px + env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 20;
+}
+#weaponPicks .pick {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  border: 3px solid #fff3a0;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 4px 12px rgba(90, 74, 107, 0.2), 0 0 12px rgba(255, 230, 120, 0.7);
+  font-size: 30px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+  animation: pickIn 0.18s ease-out;
+}
+#weaponPicks .pick small {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 700 10px 'Fredoka', system-ui, sans-serif;
+  color: #fff;
+  background: #e8333f;
+  border-radius: 8px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+#weaponPicks .pick:active { transform: scale(0.92); }
+#weaponPicks .pick.taken { opacity: 0.4; }
+@keyframes pickIn { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@media (max-height: 430px) {
+  #weaponPicks { top: calc(62px + env(safe-area-inset-top)); gap: 6px; }
+  #weaponPicks .pick { width: 50px; height: 50px; font-size: 26px; }
 }
 
 #shrinkTimer {

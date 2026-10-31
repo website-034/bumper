@@ -3,11 +3,11 @@ import { mergeRigidParts } from './merge.js';
 
 // len = grip-to-tip length; windup, spin, turns and sweep must match the server's WEAPONS table.
 export const WEAPON_INFO = {
-  pan: { label: 'Frying Pan', len: 1.85, windup: 0.3, sweep: true, words: ['CLANG!', 'DONG!', 'TONK!'] },
-  hammer: { label: 'Squeaky Mallet', len: 2.05, windup: 0.45, spin: 0.65, turns: 2, words: ['BONK!', 'SQUEAK!', 'KA-BONK!'] },
-  blaster: { label: 'Foam Blaster', len: 1.2, windup: 0, ranged: true, words: ['SPLAT!', 'FWUMP!', 'PLOP!'] },
+  pan: { label: 'Frying Pan', icon: '🍳', len: 1.85, windup: 0.3, sweep: true, words: ['CLANG!', 'DONG!', 'TONK!'] },
+  hammer: { label: 'Squeaky Mallet', icon: '🔨', len: 2.05, windup: 0.45, spin: 0.65, turns: 2, words: ['BONK!', 'SQUEAK!', 'KA-BONK!'] },
+  blaster: { label: 'Foam Blaster', icon: '🔫', len: 1.2, windup: 0, ranged: true, words: ['SPLAT!', 'FWUMP!', 'PLOP!'] },
   // Worn one on each paw; every hit knocks out, and they wear out after 3 knockouts.
-  gloves: { label: 'Boxing Gloves', len: 0.6, windup: 0.15, gloves: true, kos: 3, words: ['KNOCKOUT!', 'K.O.!', 'POW!'] },
+  gloves: { label: 'Boxing Gloves', icon: '🥊', len: 0.6, windup: 0.15, gloves: true, kos: 3, words: ['KNOCKOUT!', 'K.O.!', 'POW!'] },
 };
 
 const mat = (color, opts = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.55, ...opts });

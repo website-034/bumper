@@ -72,12 +72,10 @@
     <div class="controls-grid">
       <span><b>Drag</b> anywhere to move</span>
       <span><b>JUMP</b> button</span>
-      <span><b>PUNCH</b> / <b>SWING</b></span>
-      <span><b>Hold GRAB</b></span>
-      <span><b>KICK</b></span>
-      <span><b>Drag THROW</b> to aim</span>
-      <span class="wide">Drag from <b>THROW</b> and let go to throw, toss or fire · let go on the button to cancel</span>
-      <span class="wide"><b>PICK UP</b> ✨ weapons · Mallet <b>SWING</b> spins · 🥊 gloves KO in one punch</span>
+      <span><b>PUNCH</b>: hit or use your weapon</span>
+      <span><b>Hold GRAB</b>, let go to throw</span>
+      <span class="wide"><b>THROW</b> your weapon: tap to throw at the nearest buddy, or drag to aim</span>
+      <span class="wide">Tap a weapon icon (top right) to pick it up or swap · 🥊 gloves KO in one punch</span>
       <span class="wide">Hits only daze! <b>Grab &amp; throw</b> buddies over the fence or into the river</span>
       <span class="wide"><b>🎥 Follow</b> cam: drag the right side to look around</span>
     </div>
@@ -92,7 +90,6 @@
   </div>
 
   <div id="touchButtons" class="hidden">
-    <div class="tbtn" id="tKick">KICK</div>
     <div class="tbtn" id="tThrow"><span class="tlabel">THROW</span><i class="aimKnob"></i></div>
     <div class="tbtn" id="tJump">JUMP</div>
     <div class="tbtn" id="tGrab">GRAB</div>
@@ -104,6 +101,7 @@
     <button id="viewBtn" class="hidden" aria-label="Switch camera">🏝️ Arena</button>
     <button id="fullscreenBtn" class="hidden" aria-label="Fullscreen">⛶</button>
   </div>
+  <div id="weaponPicks"></div>
   <div id="loadingScreen">
     <h1 class="title"><span>Bumper</span> <span>Buddies</span></h1>
     <div class="load-spin">🏝️</div>

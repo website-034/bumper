@@ -1041,10 +1041,6 @@ const sfx = {
     tone({ type: 'triangle', f0: 1760, f1: 1700, dur: 0.5, vol: 0.06, delay: 0.08 });
   },
   splash: () => noise({ dur: 0.35, vol: 0.18, f0: 2500, f1: 400, q: 0.8, type: 'bandpass' }),
-  kick: () => {
-    noise({ dur: 0.1, vol: 0.12, f0: 600, f1: 2000, q: 1.5, type: 'bandpass' });
-    tone({ f0: 180, f1: 70, dur: 0.1, vol: 0.12 });
-  },
   spin: () => noise({ dur: 0.6, vol: 0.18, f0: 400, f1: 3200, q: 2, type: 'bandpass' }),
   climb: () => [440, 660, 880].forEach((f, i) => tone({ type: 'triangle', f0: f, f1: f * 1.2, dur: 0.1, vol: 0.08, delay: i * 0.08 })),
   warn: () => [0, 0.25, 0.5].forEach((d) => tone({ type: 'square', f0: 660, f1: 440, dur: 0.18, vol: 0.05, delay: d })),
@@ -1204,7 +1200,7 @@ function sampleAt(kind, id, out) {
 
 // ---------- Local prediction: my critter reacts to my input instantly, then eases onto the server ----------
 // Defaults mirror server.js; the room info sends the real values (room.move).
-const PRED = { accel: 9, airAccel: 2.5, jump: 8.5, gravity: 24, punchCd: 420, kickCd: 700, aimTurn: 22, body: 0.85, flow: 6, bridge: 1.15 };
+const PRED = { accel: 9, airAccel: 2.5, jump: 8.5, gravity: 24, punchCd: 420, aimTurn: 22, pickRange: 2.6, body: 0.85, flow: 6, bridge: 1.15 };
 const PRED_SNAP = 1.5; // metres of disagreement before we stop easing and just jump to the server
 const STALL_MS = 350; // no snapshot for this long: the connection is stuck, so hold still instead of drifting
 const LATE_MS = 200; // snapshots arriving this late (a burst after a hiccup) are too stale to correct against
@@ -1213,7 +1209,7 @@ function applyMoveConstants(m) {
   Object.assign(PRED, { accel: m.accel, airAccel: m.airAccel, jump: m.jump, gravity: m.gravity, aimTurn: m.aimTurn });
   if (m.body) Object.assign(PRED, { body: m.body, flow: m.flow, bridge: m.bridge });
   PRED.punchCd = m.punchCd * 1000;
-  PRED.kickCd = m.kickCd * 1000;
+  if (m.pickRange) PRED.pickRange = m.pickRange;
 }
 
 // Same river test as the server: the current's direction here, or null on land / a bridge.
@@ -1329,8 +1325,8 @@ function predictMe(c, s, dt) {
   return true;
 }
 
-// Start the jump / punch / kick animation the moment the button is pressed.
-function predictActions(punch, jump, kick) {
+// Start the jump / punch animation the moment the button is pressed.
+function predictActions(punch, jump) {
   const c = critters.get(myId), s = c?.s;
   if (!canPredict(s) || !c.pred) return;
   if (jump && s.g && !(c.lift > 0)) {
@@ -1346,10 +1342,6 @@ function predictActions(punch, jump, kick) {
     c.localArm = 1 - (c.localArm || 0);
     if (c.kind === 'model') { c.punchT = 0.45; c.setState('punch', { restart: true, duration: 0.45 }); }
     else c.punch[c.localArm] = 1;
-  }
-  if (kick && !s.h && !recent(c.localKick, PRED.kickCd)) {
-    c.localKick = performance.now();
-    c.kickNow = true;
   }
 }
 
@@ -1544,14 +1536,6 @@ function animateCritter(c, dt, s, opts = {}) {
   p.scale.set(1 - sq * 0.5, 1 + sq, 1 - sq * 0.5);
   updateHeldWeapon(c, dt, s);
 
-  // Kick: lean back and shoot one leg forward.
-  const kickStart = (!!(s && s.kk && !c.lastKk) && !recent(c.localKick, Math.max(0, rtt) + 250)) || !!c.kickNow;
-  c.kickNow = false;
-  if (kickStart) c.kickA = 1;
-  c.lastKk = s ? s.kk : 0;
-  c.kickA = Math.max(0, (c.kickA || 0) - dt * 3.2);
-  const kickE = Math.sin(c.kickA * Math.PI);
-  p.rotation.x -= kickE * 0.3;
   // Hanging off the fence: pulled up toward the rail as the climb progresses, swaying.
   if (hang) {
     p.rotation.x = 0.25 + Math.sin(time * 10) * 0.05;
@@ -1600,7 +1584,7 @@ function animateCritter(c, dt, s, opts = {}) {
   }
 
   if (isModel) {
-    animateModel(c, dt, { s, speed, held: held || hang, holding, ko, falling, airborne, opts, kickStart });
+    animateModel(c, dt, { s, speed, held: held || hang, holding, ko, falling, airborne, opts });
     c.stars.visible = c.ko > 0.3;
     if (c.stars.visible) {
       c.stars.rotation.y += dt * 4;
@@ -1615,8 +1599,7 @@ function animateCritter(c, dt, s, opts = {}) {
   const koLift = c.ko * 0.5;
   const splay = dz * 0.12;
   c.footL.position.set(-0.34 - splay, 0.13 + Math.max(0, sw) * 0.16 * amt + koLift + kick, 0.08 + sw * 0.28 * amt + koLift * 0.8);
-  c.footR.position.set(0.34 + splay, 0.13 + Math.max(0, -sw) * 0.16 * amt + koLift - kick + kickE * 0.55, 0.08 - sw * 0.28 * amt + koLift * 0.8 + kickE * 0.95);
-  c.footR.scale.setScalar(1 + kickE * 0.3);
+  c.footR.position.set(0.34 + splay, 0.13 + Math.max(0, -sw) * 0.16 * amt + koLift - kick, 0.08 - sw * 0.28 * amt + koLift * 0.8);
   if (st > 0 && grounded) {
     // Stagger steps in the direction of the knock.
     const ph = (1 - st) * Math.PI * 3;
@@ -1801,9 +1784,9 @@ function animateCritter(c, dt, s, opts = {}) {
   c.root.visible = !(s && s.st === 'out' && room?.phase !== 'lobby');
 }
 
-function animateModel(c, dt, { s, speed, held, holding, ko, falling, airborne, opts, kickStart }) {
+function animateModel(c, dt, { s, speed, held, holding, ko, falling, airborne, opts }) {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  if ((s && s.pa && s.pa !== c.lastPa && !recent(c.localPunch, Math.max(0, rtt) + 250)) || kickStart) {
+  if (s && s.pa && s.pa !== c.lastPa && !recent(c.localPunch, Math.max(0, rtt) + 250)) {
     c.punchT = 0.45;
     c.setState('punch', { restart: true, duration: 0.45 });
   }
@@ -2420,8 +2403,6 @@ function handleEvent(e) {
   } else if (e.t === 'spin') {
     if (c) c.sq -= 0.2;
     sfx.spin();
-  } else if (e.t === 'kick') {
-    sfx.kick();
   } else if (e.t === 'hang') {
     if (c) { c.sq -= 0.3; comicWord(c.x, c.y + 1.4, c.z, false, ['GRAB!', 'HANG ON!', 'PHEW!']); }
     sfx.grab();
@@ -2476,11 +2457,12 @@ setViewMode(viewMode);
   btn.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 let joy = { x: 0, y: 0, id: null, ox: 0, oy: 0 };
-let punchQueued = false, jumpQueued = false, kickQueued = false, fireQueued = false, touchGrab = false;
-// Aiming: drag from the THROW button; letting go throws in the aimed direction.
+let punchQueued = false, jumpQueued = false, fireQueued = false, fireAuto = false, touchGrab = false, pickQueued = 0;
+// THROW: drag from the button to aim and let go to throw; a plain tap throws at the nearest enemy in front.
 const AIM_DEADZONE = 26;
 let touchAim = { id: null, dx: 0, dy: 0 };
 let myAim = null, fireAim = null;
+const armedNow = () => { const s = snap?.players.find((p) => p.id === myId); return !!(s && s.w && !s.h); };
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 const camFwd = new THREE.Vector3();
@@ -2522,13 +2504,13 @@ function computeAim() {
   };
   hold('tPunch', () => (punchQueued = true));
   hold('tJump', () => (jumpQueued = true));
-  hold('tKick', () => (kickQueued = true));
   hold('tGrab', () => (touchGrab = true), () => (touchGrab = false));
 
-  // THROW works like a second mini-joystick: drag to aim, let go to throw, let go on the button to cancel.
+  // THROW works like a second mini-joystick: drag to aim, let go to throw.
   const el = $('tThrow'), knob = el.querySelector('.aimKnob');
   el.addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    if (!armedNow()) return;
     el.setPointerCapture(e.pointerId);
     el.classList.add('down', 'aiming');
     const r = el.getBoundingClientRect();
@@ -2540,16 +2522,16 @@ function computeAim() {
     touchAim.dy = e.clientY - touchAim.oy;
     const l = Math.hypot(touchAim.dx, touchAim.dy), k = l > 44 ? 44 / l : 1;
     knob.style.transform = `translate(${touchAim.dx * k}px, ${touchAim.dy * k}px)`;
-    el.classList.toggle('cancel', l < AIM_DEADZONE);
   });
   const end = (e) => {
     if (e.pointerId !== touchAim.id) return;
-    if (e.type === 'pointerup' && Math.hypot(touchAim.dx, touchAim.dy) >= AIM_DEADZONE) {
+    if (e.type === 'pointerup') {
+      fireAuto = Math.hypot(touchAim.dx, touchAim.dy) < AIM_DEADZONE;
       fireAim = computeAim();
       fireQueued = !!fireAim;
     }
     touchAim = { id: null, dx: 0, dy: 0 };
-    el.classList.remove('down', 'aiming', 'cancel');
+    el.classList.remove('down', 'aiming');
     knob.style.transform = '';
   };
   el.addEventListener('pointerup', end);
@@ -2601,7 +2583,7 @@ let lastSent = '';
 let lastSendTime = 0;
 function sendInput(now) {
   // Nothing is sent while disconnected: socket.io would queue it and replay stale presses on reconnect.
-  if (!myId || !socket.connected) { punchQueued = jumpQueued = kickQueued = fireQueued = false; return; }
+  if (!myId || !socket.connected) { punchQueued = jumpQueued = fireQueued = false; pickQueued = 0; return; }
   let x = 0, z = 0;
   if (joy.id !== null) { x = joy.x; z = joy.y; }
   const len = Math.hypot(x, z);
@@ -2616,15 +2598,16 @@ function sendInput(now) {
   myMove.x = x; myMove.z = z;
   const a = fireQueued ? fireAim : myAim;
   const key = `${x.toFixed(2)},${z.toFixed(2)},${grab},${a ? `${a.x.toFixed(2)},${a.z.toFixed(2)}` : ''}`;
-  if (punchQueued || jumpQueued || kickQueued || fireQueued || (key !== lastSent && now - lastSendTime > 15) || now - lastSendTime > 150) {
+  if (punchQueued || jumpQueued || fireQueued || pickQueued || (key !== lastSent && now - lastSendTime > 15) || now - lastSendTime > 150) {
     socket.emit('input', {
-      x, z, grab, punch: punchQueued, jump: jumpQueued, kick: kickQueued,
-      fire: fireQueued, aim: !!myAim, ax: a ? a.x : 0, az: a ? a.z : 0,
+      x, z, grab, punch: punchQueued, jump: jumpQueued, pick: pickQueued || undefined,
+      fire: fireQueued, auto: fireQueued && fireAuto, aim: !!myAim, ax: a ? a.x : 0, az: a ? a.z : 0,
     });
-    predictActions(punchQueued, jumpQueued, kickQueued);
+    predictActions(punchQueued, jumpQueued);
     lastSent = key;
     lastSendTime = now;
-    punchQueued = jumpQueued = kickQueued = fireQueued = false;
+    punchQueued = jumpQueued = fireQueued = false;
+    pickQueued = 0;
   }
 }
 
@@ -2647,9 +2630,7 @@ function aimProfile(s) {
   const arcs = room?.arcs;
   if (!arcs) return null;
   if (s.h) return arcs.player;
-  const info = WEAPON_INFO[s.w];
-  if (!info) return arcs.kick;
-  return info.ranged ? arcs.blaster : arcs.weapon;
+  return WEAPON_INFO[s.w] ? arcs.weapon : null;
 }
 
 function updateAimPreview(R) {
@@ -2836,43 +2817,68 @@ function updateShrinkTimer(playing, shrinking) {
 let hintState = '';
 const koLeftText = (n) => `${n} knockout${n === 1 ? '' : 's'} left`;
 function updateActionHints(me) {
-  let grab = 'GRAB', punch = 'PUNCH', toss = 'AIM', kick = 'KICK', hint = '';
+  let grab = 'GRAB', punch = 'PUNCH', hint = '';
   if (me) {
-    const near = (snap.items || []).find((it) => it.y < 0.5 && Math.hypot(it.x - me.x, it.z - me.z) < 1.9);
     const info = WEAPON_INFO[me.w];
     if (me.hg) {
       hint = 'Hanging on! Mash <b>JUMP</b> to climb back in';
     } else if (me.h) {
-      punch = 'THROW';
-      toss = 'THROW';
-      hint = 'Drag <b>THROW</b> to aim, let go to throw them';
+      grab = 'LET GO';
+      hint = 'Face where they should fly, then let go of <b>GRAB</b> to throw them';
     } else if (info) {
       punch = me.w === 'blaster' ? 'SHOOT' : info.gloves ? `PUNCH 🥊${me.wu}` : 'SWING';
-      toss = me.w === 'blaster' ? 'FIRE' : 'AIM';
-      grab = 'TOSS';
       const label = info.gloves ? `${info.label} (${koLeftText(me.wu)})` : info.label;
       if (info.spin) hint = '<b>SWING</b> to spin and bonk everyone around you';
       else if (info.gloves) hint = `${label}: every <b>PUNCH</b> that lands is a knockout`;
-    } else if (near) {
-      grab = 'PICK UP';
-      const info = WEAPON_INFO[near.t];
-      const label = info.gloves && near.u ? `${info.label} (${koLeftText(near.u)})` : info.label;
-      hint = `Tap <b>PICK UP</b> for the ${label}`;
     }
   }
-  const key = [grab, punch, toss, kick, hint].join('|');
+  const canThrow = !!(me?.w && !me.h);
+  const key = [grab, punch, canThrow, hint].join('|');
   if (key === hintState) return;
   hintState = key;
   $('tGrab').textContent = grab;
   $('tPunch').textContent = punch;
-  $('tKick').textContent = kick;
-  $('tThrow').querySelector('.tlabel').textContent = toss;
-  $('tGrab').classList.toggle('glow', grab === 'PICK UP');
-  $('tPunch').classList.toggle('armed', !!me?.w && !me.h);
-  $('tThrow').classList.toggle('armed', toss !== 'AIM');
+  $('tGrab').classList.toggle('glow', !!me?.h);
+  $('tPunch').classList.toggle('armed', canThrow);
+  $('tThrow').classList.toggle('armed', canThrow);
+  $('tThrow').classList.toggle('off', !canThrow);
   $('actionHint').innerHTML = hint;
   $('actionHint').classList.toggle('hidden', !hint);
 }
+
+// Weapons lying within reach, shown as icons under the top buttons; tap one to pick it up
+// (a weapon already in hand is put down).
+let picksKey = '';
+function updateWeaponPicks(me) {
+  const el = $('weaponPicks');
+  let list = [];
+  if (me && !me.h && !me.hb && !me.hg && me.st === 'alive') {
+    const c = critters.get(myId);
+    const x = c ? c.x : me.x, z = c ? c.z : me.z;
+    list = (snap.items || [])
+      .filter((it) => it.y < 1.4 && it.y > -0.5 && WEAPON_INFO[it.t])
+      .map((it) => ({ it, d: Math.hypot(it.x - x, it.z - z) }))
+      .filter((o) => o.d < PRED.pickRange)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 4)
+      .map((o) => o.it);
+  }
+  const key = list.map((it) => `${it.i}:${it.u ?? ''}`).join(',');
+  if (key === picksKey) return;
+  picksKey = key;
+  el.innerHTML = list.map((it) => {
+    const info = WEAPON_INFO[it.t];
+    const uses = info.gloves && it.u ? `<small>${it.u} KO</small>` : '';
+    return `<button class="pick" data-id="${it.i}" aria-label="Pick up ${info.label}"><span>${info.icon}</span>${uses}</button>`;
+  }).join('');
+}
+$('weaponPicks').addEventListener('pointerdown', (e) => {
+  const b = e.target.closest('.pick');
+  if (!b) return;
+  e.preventDefault();
+  pickQueued = Number(b.dataset.id);
+  b.classList.add('taken');
+});
 
 // ---------- Quality tier, mood and per-critter world effects ----------
 let appliedTier = null;
@@ -3329,6 +3335,7 @@ function frame(now) {
   $('dizzyMeter').classList.toggle('hidden', !showDizzy);
   if (showDizzy) $('dizzyFill').style.width = `${me.ko ? 100 : me.dz}%`;
   updateActionHints(showDizzy ? me : null);
+  updateWeaponPicks(showDizzy ? me : null);
   updateInvFx(dt);
 
   blades.uniforms.uTime.value = time;
@@ -3353,7 +3360,7 @@ document.addEventListener('visibilitychange', () => {
     touchGrab = false;
     touchAim = { id: null, dx: 0, dy: 0 };
     $('joyBase').classList.add('hidden');
-    for (const el of document.querySelectorAll('.tbtn.down')) el.classList.remove('down', 'aiming', 'cancel');
+    for (const el of document.querySelectorAll('.tbtn.down')) el.classList.remove('down', 'aiming');
     if (myId && socket.connected) socket.emit('input', { x: 0, z: 0, grab: false, aim: false });
     lastSent = '';
     return;
