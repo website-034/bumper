@@ -1992,6 +1992,7 @@ $('playBtn').onclick = () => {
   goFullscreen();
   wantedAnimal = myAnimal;
   myName = getName();
+  unlockVideoSound();
   socket.emit('join', { code: ROOM_CODE, name: myName, animal: myAnimal });
 };
 nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('playBtn').click(); });
@@ -2983,25 +2984,62 @@ function critterFx(dt, R, playing) {
 }
 
 // ---------- Loading screen (everyone; a few get the video instead) ----------
-let videoLoad = false, videoBroken = false;
+const LOAD_FADE = 400, LOAD_TIME = 2000;
+let videoLoad = false, videoBroken = false, loadFadeT = 0, volAnim = 0;
 const loadVideo = $('loadVideo');
 loadVideo.muted = loadVideo.defaultMuted = true;
-loadVideo.addEventListener('error', () => { videoBroken = true; loadVideo.classList.add('hidden'); });
+loadVideo.addEventListener('error', () => { videoBroken = true; loadVideo.classList.remove('show'); });
+
+// Phones only allow sound on a video that was started from a tap, so the Play tap starts it silently once.
+function unlockVideoSound() {
+  if (videoBroken) return;
+  loadVideo.muted = false;
+  loadVideo.volume = 0;
+  loadVideo.play().then(() => {
+    loadVideo.pause();
+    try { loadVideo.currentTime = 0; } catch {}
+  }).catch(() => {});
+}
+function fadeVolume(to, ms) {
+  clearInterval(volAnim);
+  const from = loadVideo.volume, t0 = performance.now();
+  volAnim = setInterval(() => {
+    const k = Math.min(1, (performance.now() - t0) / ms);
+    loadVideo.volume = from + (to - from) * k;
+    if (k >= 1) clearInterval(volAnim);
+  }, 30);
+}
 function showLoading() {
-  $('loadingScreen').classList.remove('hidden');
+  clearTimeout(loadFadeT);
+  $('loadingScreen').classList.add('show');
+  // Fade out in time to be gone exactly when the countdown starts.
+  loadFadeT = setTimeout(fadeOutLoading, LOAD_TIME - LOAD_FADE);
   if (!videoLoad || videoBroken) return;
-  loadVideo.autoplay = true;
   try { loadVideo.currentTime = 0; } catch {}
+  loadVideo.volume = 0;
+  const reveal = () => {
+    if (lastPhase !== 'loading') return loadVideo.pause();
+    loadVideo.classList.add('show');
+    fadeVolume(1, LOAD_FADE);
+  };
   // Revealed only once it actually plays, so a failure leaves the normal screen up.
-  loadVideo.play()
-    .then(() => { if (lastPhase === 'loading') loadVideo.classList.remove('hidden'); else loadVideo.pause(); })
-    .catch(() => loadVideo.classList.add('hidden'));
+  // With sound if the browser allows it, otherwise muted.
+  loadVideo.muted = false;
+  loadVideo.play().then(reveal).catch(() => {
+    loadVideo.muted = true;
+    loadVideo.play().then(reveal).catch(() => loadVideo.classList.remove('show'));
+  });
+}
+function fadeOutLoading() {
+  clearTimeout(loadFadeT);
+  $('loadingScreen').classList.remove('show');
+  if (!loadVideo.classList.contains('show')) return;
+  loadVideo.classList.remove('show');
+  fadeVolume(0, LOAD_FADE);
+  loadFadeT = setTimeout(() => loadVideo.pause(), LOAD_FADE + 50);
 }
 function hideLoading() {
-  $('loadingScreen').classList.add('hidden');
-  loadVideo.classList.add('hidden');
-  loadVideo.autoplay = false;
-  if (!loadVideo.paused) loadVideo.pause();
+  if ($('loadingScreen').classList.contains('show') || loadVideo.classList.contains('show')) fadeOutLoading();
 }
 socket.on('pvLoad', () => {
   videoLoad = true;
