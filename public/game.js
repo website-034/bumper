@@ -2984,7 +2984,8 @@ function critterFx(dt, R, playing) {
 }
 
 // ---------- Loading screen (everyone; a few get the video instead) ----------
-const LOAD_FADE = 400, LOAD_TIME = 2000;
+// LOAD_TIME must match LOADING_TIME in server.js.
+const LOAD_FADE = 250, LOAD_TIME = 1000;
 let videoLoad = false, videoBroken = false, loadFadeT = 0, volAnim = 0;
 const loadVideo = $('loadVideo');
 loadVideo.muted = loadVideo.defaultMuted = true;
