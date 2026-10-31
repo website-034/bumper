@@ -4,14 +4,14 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildCritter } from './characters.js';
 import { MODEL_CHARACTERS, loadManifest, loadModel, isModelReady, buildModelCritter } from './models.js';
 import { FLUFFY, buildFluffy, setGlassQuality } from './crew.js';
-import { FUR_TIME, setFurDetail } from './fluffy.js';
+import { setPlushQuality } from './fluffy.js';
 import { Ragdoll, poseRagdoll, ragdollHead } from './floppy.js';
 import { Particles, SHAPE } from './particles.js';
 import {
-  FUR_LAYER, FOAM_SLOTS, PUSH_SLOTS, mixMood, makeEnvironment, makeSky, makePost, grassGroundTexture, riverMaterial,
+  FOAM_SLOTS, PUSH_SLOTS, mixMood, makeEnvironment, makeSky, makePost, grassGroundTexture, riverMaterial,
   makeWaterfall, makeGrass, makeContactShadows, cliffMaterial,
 } from './gfx.js';
-import { WEAPON_INFO, buildWeapon, buildPickup, buildShot, animateBomb } from './weapons.js';
+import { WEAPON_INFO, buildWeapon, buildGlove, buildPickup, buildShot } from './weapons.js';
 
 await loadManifest();
 // Furry and jelly critters plus any .glb characters listed in /models/characters.json.
@@ -27,7 +27,6 @@ const canvas = $('game');
 
 const ISLAND_MAX = 28;
 const ISLAND_MIN = 6;
-const BOMB_RADIUS = 3.2;
 const TEAM_COLORS = ['#ff6b81', '#4dabf7', '#51cf66', '#ffc93c'];
 const TEAM_NAMES = ['Red', 'Blue', 'Green', 'Yellow'];
 const ANIMAL_KEYS = Object.keys(CHARACTERS);
@@ -53,6 +52,11 @@ const lowPower = matchMedia('(pointer: coarse)').matches;
 // ---------- Quality tiers (visual only: gameplay is identical on every tier) ----------
 const QUALITY_PREFS = ['auto', 'high', 'medium', 'low'];
 let qualityPref = QUALITY_PREFS.includes(localStorage.getItem('bb-quality')) ? localStorage.getItem('bb-quality') : 'auto';
+// Phones run hot on anything heavier, so they start on low until the player picks otherwise.
+if (lowPower && localStorage.getItem('bb-quality') === null) {
+  qualityPref = 'low';
+  localStorage.setItem('bb-quality', qualityPref);
+}
 let autoTier = lowPower ? 'low' : 'high';
 const tier = () => (qualityPref === 'auto' ? autoTier : qualityPref);
 let fpsAcc = 0, fpsFrames = 0, slowFor = 0;
@@ -96,7 +100,6 @@ renderer.toneMappingExposure = 1.0;
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog('#f1e4ff', 80, 240);
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 400);
-camera.layers.enable(FUR_LAYER);
 const camPos = new THREE.Vector3(-2, 5, 10);
 const camLook = new THREE.Vector3(-2, 1, 0);
 const post = makePost(renderer, scene, camera);
@@ -710,46 +713,6 @@ function updateGuards(R, playing) {
   fenceRails.instanceMatrix.needsUpdate = true;
 }
 
-// ---------- Bomb explosions ----------
-function explosion(x, y, z, sticky) {
-  y += island.position.y;
-  const flash = new THREE.Mesh(new THREE.SphereGeometry(0.6, 20, 14), new THREE.MeshBasicMaterial({ color: new THREE.Color(sticky ? '#c9ffb0' : '#fff1a8').multiplyScalar(3), transparent: true }));
-  flash.position.set(x, y, z);
-  addEffect(flash, { vel: new THREE.Vector3(), life: 0.35, max: 0.35, grow: 5.5, gravity: 0 });
-  const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, side: THREE.DoubleSide, depthWrite: false }));
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.set(x, island.position.y + 0.08, z);
-  addEffect(ring, { vel: new THREE.Vector3(), life: 0.45, max: 0.45, grow: BOMB_RADIUS * 1.3, gravity: 0 });
-  const ground = island.position.y + 0.05;
-  const fire = sticky ? ['#7dff9a', '#c9ffb0', '#3fe070'] : ['#ffad5c', '#ffd15a', '#ff6a3d'];
-  for (let i = 0; i < 28; i++) {
-    const a = Math.random() * Math.PI * 2, sp = 1.5 + Math.random() * 4.5;
-    particles.spawn({
-      x, y, z, vx: Math.cos(a) * sp, vy: 1 + Math.random() * 4, vz: Math.sin(a) * sp, drag: 3, life: 0.45 + Math.random() * 0.35,
-      size: 0.9 + Math.random() * 0.6, grow: 1.4, color: fire[i % 3], intensity: 3, shape: SHAPE.glow, add: true, fade: 0.7,
-    });
-  }
-  for (let i = 0; i < 14; i++) {
-    const a = Math.random() * Math.PI * 2, sp = 0.8 + Math.random() * 2;
-    particles.spawn({
-      x, y: y + 0.3, z, vx: Math.cos(a) * sp, vy: 1.2 + Math.random() * 2, vz: Math.sin(a) * sp, drag: 1.2, life: 1.4 + Math.random() * 0.9,
-      size: 0.9 + Math.random() * 0.5, grow: 2.4, color: sticky ? '#5f9c72' : '#8f8499', alpha: 0.7, fadeIn: 0.12, fade: 0.7, decor: true,
-    });
-  }
-  for (let i = 0; i < 18; i++) {
-    const a = Math.random() * Math.PI * 2, sp = 3 + Math.random() * 6;
-    particles.spawn({
-      x, y: y + 0.2, z, vx: Math.cos(a) * sp, vy: 4 + Math.random() * 5, vz: Math.sin(a) * sp, gravity: 20, floor: ground, life: 1.3 + Math.random() * 0.5,
-      size: 0.12 + Math.random() * 0.1, color: i % 3 ? '#5a4a6b' : '#8fcf7a', shape: SHAPE.chunk, spin: (Math.random() - 0.5) * 16, fade: 0.3,
-    });
-  }
-  puff(x, ground, z, 10, '#ffffff', 4);
-  comicWord(x, y + 1.5, z, true, WEAPON_INFO[sticky ? 'sticky' : 'bomb'].words);
-  const me = critters.get(myId);
-  const d = me ? Math.hypot(me.x - x, me.z - z) : 10;
-  shake = Math.max(shake, d < 8 ? 1.1 : 0.5);
-}
-
 // ---------- Weapons on the ground and foam-ball shots ----------
 const pickups = new Map();
 const shotMeshes = new Map();
@@ -767,37 +730,15 @@ function syncItems(s, dt) {
       scene.add(p.root);
       pickups.set(it.i, p);
     }
-    const info = WEAPON_INFO[it.t] || {};
-    const victim = it.k && critters.get(it.k);
-    if (victim) {
-      // Stuck on someone's back.
-      const bx = victim.x - Math.sin(victim.face) * 0.55, bz = victim.z - Math.cos(victim.face) * 0.55;
-      p.root.position.set(bx, victim.root.position.y + (victim.height || 2.3) * 0.45, bz);
-      p.root.rotation.y = victim.face;
-      p.holder.rotation.x = -0.5;
-      p.holder.position.y = p.baseY;
-      p.ring.visible = p.glow.visible = false;
-    } else {
-      const q = sampleAt('items', it.i, interpOut) || it;
-      p.root.position.set(q.x, q.y + island.position.y, q.z);
-      const landed = q.y < 0.05;
-      p.root.rotation.y = it.r;
-      // Tumble while airborne, then settle and bob gently (bombs just sit and fizz).
-      // Kicked bombs skid along the ground, wobbling.
-      p.holder.rotation.x = it.s || landed ? 0 : p.holder.rotation.x + dt * (info.bomb ? 3 : 6);
-      p.holder.rotation.z = it.s ? Math.sin(time * 30) * 0.35 : 0;
-      p.holder.position.y = p.baseY + (landed && !info.bomb ? Math.abs(Math.sin(time * 2.5 + it.i)) * 0.08 : 0);
-      p.ring.visible = p.glow.visible = landed && !it.s;
-      if (it.s && Math.random() < dt * 20) puff(p.root.position.x, 0.15 + island.position.y, p.root.position.z, 1, '#f3e6d6', 0.6);
-      p.ring.scale.setScalar(p.ringS * (1 + Math.sin(time * 5 + it.i) * 0.06));
-    }
-    if (info.bomb) {
-      animateBomb(p.model, it.f, time);
-      if (it.f >= 0 && Math.random() < dt * 14) {
-        const sp = p.model.userData.spark.getWorldPosition(tmpSpark);
-        sparkle(sp.x, sp.y, sp.z);
-      }
-    }
+    const q = sampleAt('items', it.i, interpOut) || it;
+    p.root.position.set(q.x, q.y + island.position.y, q.z);
+    const landed = q.y < 0.05;
+    p.root.rotation.y = it.r;
+    // Tumble while airborne, then settle and bob gently.
+    p.holder.rotation.x = landed ? 0 : p.holder.rotation.x + dt * 6;
+    p.holder.position.y = p.baseY + (landed ? Math.abs(Math.sin(time * 2.5 + it.i)) * 0.08 : 0);
+    p.ring.visible = p.glow.visible = landed;
+    p.ring.scale.setScalar(p.ringS * (1 + Math.sin(time * 5 + it.i) * 0.06));
   }
   for (const [id, p] of pickups) if (!seen.has(id)) { scene.remove(p.root); pickups.delete(id); }
 
@@ -810,15 +751,6 @@ function syncItems(s, dt) {
     m.position.set(q.x, q.y, q.z);
   }
   for (const [id, m] of shotMeshes) if (!seenShots.has(id)) { scene.remove(m); shotMeshes.delete(id); }
-}
-
-const tmpSpark = new THREE.Vector3();
-function sparkle(x, y, z) {
-  const a = Math.random() * Math.PI * 2;
-  particles.spawn({
-    x, y, z, vx: Math.cos(a) * 1.5, vy: 1.5 + Math.random() * 1.5, vz: Math.sin(a) * 1.5, gravity: 8, life: 0.35,
-    size: 0.14, color: Math.random() < 0.5 ? '#ffd15a' : '#ff8a3d', intensity: 3, shape: SHAPE.glow, add: true,
-  });
 }
 
 function sweat(c) {
@@ -895,16 +827,38 @@ function splash(x, z, strength) {
   }
 }
 
+// Boxing gloves sit over both paws; the paw meshes hide underneath until the gloves come off.
+function setGloves(c, on) {
+  if (!c.armL || !!c.gloves === !!on) return;
+  const paws = [c.armL, c.armR];
+  if (on) {
+    c.gloves = paws.map((paw, i) => {
+      for (const m of paw.children) m.visible = false;
+      const glove = buildGlove(i ? 1 : -1);
+      paw.add(glove);
+      return glove;
+    });
+  } else {
+    paws.forEach((paw, i) => {
+      paw.remove(c.gloves[i]);
+      for (const m of paw.children) m.visible = true;
+    });
+    c.gloves = null;
+  }
+}
+
 const tipV = new THREE.Vector3();
 // Heavy weapons are dragged along the ground with both hands, heaved overhead
-// during the wind-up, then slammed forward. The blaster is carried at the hip.
+// during the wind-up, then slammed forward. The blaster is carried at the hip; boxing gloves
+// replace the paws themselves.
 function updateHeldWeapon(c, dt, s) {
   const type = s && s.st === 'alive' && !s.fl ? s.w || '' : '';
   if (type !== (c.weaponType || '')) {
     if (c.weaponMesh) c.weaponMesh.parent?.remove(c.weaponMesh);
     c.weaponMesh = null;
     c.weaponType = type;
-    if (type) {
+    setGloves(c, WEAPON_INFO[type]?.gloves);
+    if (type && !WEAPON_INFO[type]?.gloves) {
       const info = WEAPON_INFO[type];
       const holder = new THREE.Group();
       holder.add(buildWeapon(type));
@@ -917,8 +871,7 @@ function updateHeldWeapon(c, dt, s) {
       holder.position.set(g.x, 0.2, g.z + 0.3);
       // Yaw outermost so the pan can sweep flat and the hammer can be held straight out.
       holder.rotation.order = 'YXZ';
-      holder.rotation.set(info.ranged || info.bomb ? 0 : -Math.PI / 2, 0, 0);
-      if (info.bomb) holder.scale.setScalar(0.8);
+      holder.rotation.set(info.ranged ? 0 : -Math.PI / 2, 0, 0);
       c.pivot.add(holder);
       c.weaponMesh = holder;
       c.wPhase = 'drag';
@@ -943,16 +896,7 @@ function updateHeldWeapon(c, dt, s) {
   const moving = Math.hypot(c.dvx, c.dvz) > 1;
   const side = s && s.sd < 0 ? -1 : 1;
   let px, py, pz, rx, rz, lean, k, ry = 0, roll = 0;
-  if (info.bomb) {
-    // Held up in front with both paws, fuse fizzing.
-    px = 0; py = g.y - 0.15 + Math.sin(time * 9) * 0.03; pz = 0.75;
-    rx = 0; rz = 0; lean = 0.08; k = 14;
-    animateBomb(wm.children[0], s ? s.wf ?? -1 : -1, time);
-    if (s && s.wf >= 0 && Math.random() < dt * 14) {
-      const sp = wm.children[0].userData.spark.getWorldPosition(tmpSpark);
-      sparkle(sp.x, sp.y, sp.z);
-    }
-  } else if (info.ranged) {
+  if (info.ranged) {
     const recoil = phase === 'strike' ? 1 : 0;
     px = g.x * 0.7; py = g.y + 0.1; pz = 0.45 - recoil * 0.2;
     rx = -0.05 - recoil * 0.4; rz = 0; lean = 0; k = 18;
@@ -1003,7 +947,7 @@ function updateHeldWeapon(c, dt, s) {
   }
 
   // Effort: sweat drops and dust kicked up by the dragging tip.
-  if (!info.ranged && !info.bomb && (moving || phase === 'wind')) {
+  if (!info.ranged && (moving || phase === 'wind')) {
     c.sweatT -= dt;
     if (c.sweatT <= 0) {
       c.sweatT = 0.45 + Math.random() * 0.4;
@@ -1091,24 +1035,17 @@ const sfx = {
   },
   drop: () => tone({ f0: 300, f1: 140, dur: 0.1, vol: 0.08 }),
   heave: () => tone({ type: 'triangle', f0: 180, f1: 320, dur: 0.35, vol: 0.09 }),
-  squawk: () => [0, 0.09].forEach((d) => tone({ type: 'sawtooth', f0: 900, f1: 1400, dur: 0.08, vol: 0.05, delay: d })),
-  boom: () => {
-    noise({ dur: 0.9, vol: 0.6, f0: 1800, f1: 60 });
-    tone({ f0: 110, f1: 30, dur: 0.7, vol: 0.35 });
+  // Boxing glove: a deep padded thump, then a ring-bell ding.
+  pow: () => {
+    noise({ dur: 0.18, vol: 0.4, f0: 700, f1: 90 });
+    tone({ f0: 140, f1: 45, dur: 0.22, vol: 0.32 });
+    tone({ type: 'triangle', f0: 1760, f1: 1700, dur: 0.5, vol: 0.06, delay: 0.08 });
   },
-  whistle: () => tone({ type: 'sine', f0: 1900, f1: 450, dur: 1.6, vol: 0.05 }),
-  splat: () => {
-    noise({ dur: 0.25, vol: 0.2, f0: 900, f1: 200, q: 1.2 });
-    tone({ type: 'sine', f0: 300, f1: 90, dur: 0.25, vol: 0.12 });
-  },
-  fuse: () => noise({ dur: 0.4, vol: 0.06, f0: 5000, f1: 3000, q: 0.7, type: 'highpass' }),
   splash: () => noise({ dur: 0.35, vol: 0.18, f0: 2500, f1: 400, q: 0.8, type: 'bandpass' }),
   kick: () => {
     noise({ dur: 0.1, vol: 0.12, f0: 600, f1: 2000, q: 1.5, type: 'bandpass' });
     tone({ f0: 180, f1: 70, dur: 0.1, vol: 0.12 });
   },
-  boot: () => tone({ type: 'square', f0: 260, f1: 520, dur: 0.12, vol: 0.06 }),
-  wake: () => [1320, 990, 1480].forEach((f, i) => tone({ type: 'triangle', f0: f, f1: f * 1.1, dur: 0.08, vol: 0.08, delay: i * 0.05 })),
   spin: () => noise({ dur: 0.6, vol: 0.18, f0: 400, f1: 3200, q: 2, type: 'bandpass' }),
   climb: () => [440, 660, 880].forEach((f, i) => tone({ type: 'triangle', f0: f, f1: f * 1.2, dur: 0.1, vol: 0.08, delay: i * 0.08 })),
   warn: () => [0, 0.25, 0.5].forEach((d) => tone({ type: 'square', f0: 660, f1: 440, dur: 0.18, vol: 0.05, delay: d })),
@@ -1398,7 +1335,7 @@ function predictActions(punch, jump, kick) {
   const c = critters.get(myId), s = c?.s;
   if (!canPredict(s) || !c.pred) return;
   if (jump && s.g && !(c.lift > 0)) {
-    const melee = s.w && !WEAPON_INFO[s.w]?.ranged && !WEAPON_INFO[s.w]?.bomb;
+    const melee = s.w && !WEAPON_INFO[s.w]?.ranged;
     c.liftV = PRED.jump * (melee ? 0.75 : 1);
     c.lift = 0.001;
     c.liftBase = c.y;
@@ -1590,7 +1527,7 @@ function animateCritter(c, dt, s, opts = {}) {
   // Lean into acceleration and tip back when stopping hard; roll into turns. Damped springs overshoot a little.
   spring(c, 'lean', 'leanV', grounded ? clampAbs(speed * 0.03 + laz * 0.012, 0.32) : speed * 0.02, 120, 9, dt);
   spring(c, 'sq', 'sqV', 0, 220, 8, dt);
-  const heavy = c.weaponType && !WEAPON_INFO[c.weaponType]?.ranged ? 2.4 : 1;
+  const heavy = c.weaponMesh && !WEAPON_INFO[c.weaponType]?.ranged ? 2.4 : 1;
   spring(c, 'tilt', 'tiltV', sw * 0.1 * amt * heavy - (grounded ? clampAbs(lax * 0.01, 0.2) : 0), 160, 10, dt);
 
   c.ko += ((ko ? 1 : 0) - c.ko) * Math.min(1, dt * 8);
@@ -1639,7 +1576,7 @@ function animateCritter(c, dt, s, opts = {}) {
       fl.extra.z += Math.cos(time * 4.5) * 0.22 * dz;
     }
     // Heavy weapons: dragging pulls the shoulder down; pan sweeps twist the torso.
-    if (c.wPhase === 'drag' && c.weaponMesh) p.rotation.z -= c.weaponType === 'hammer' ? 0.14 : c.weaponType === 'bat' || c.weaponType === 'lollipop' ? 0.06 : 0;
+    if (c.wPhase === 'drag' && c.weaponMesh && c.weaponType === 'hammer') p.rotation.z -= 0.14;
     spring(c, 'twist', 'twistV', c.twistT || 0, 140, 12, dt);
     p.rotation.y += c.twist || 0;
     // Getting up: push up off the ground, then shake it off.
@@ -1705,7 +1642,7 @@ function animateCritter(c, dt, s, opts = {}) {
   }
 
   // Arms
-  if (s && s.pa && s.pa !== c.lastPa && !c.weaponType && !recent(c.localPunch, Math.max(0, rtt) + 250)) c.punch[s.pa - 1] = 1;
+  if (s && s.pa && s.pa !== c.lastPa && !c.weaponMesh && !recent(c.localPunch, Math.max(0, rtt) + 250)) c.punch[s.pa - 1] = 1;
   c.lastPa = s ? s.pa : 0;
   c.punch[0] = Math.max(0, c.punch[0] - dt * 4.5);
   c.punch[1] = Math.max(0, c.punch[1] - dt * 4.5);
@@ -1751,6 +1688,10 @@ function animateCritter(c, dt, s, opts = {}) {
       ty = wp.y + (i === 0 ? 0.08 : -0.04);
       tz = wp.z + (i === 0 ? 0.08 : 0);
       locked = true;
+    } else if (c.gloves && !(c.ko > 0.5) && !airborne && !held && !falling && !(st > 0)) {
+      // Boxer's guard: both gloves up in front of the chin, bobbing; drawn back while winding up.
+      const wind = s && s.sw === 1 ? 0.18 : 0;
+      tx = side * 0.36; ty = 1.4 + Math.sin(time * 6 + i * Math.PI) * 0.05; tz = 0.5 - wind;
     }
     else if (airborne || held || falling) {
       const fast = held && s.mh ? 34 : 22;
@@ -1840,9 +1781,8 @@ function animateCritter(c, dt, s, opts = {}) {
   }
 
   if (fl) {
-    const cf = Math.cos(c.face), sf = Math.sin(c.face);
     const slack = ragging || c.ko > 0.5 ? 1 : held ? 0.4 : 0;
-    fl.update(dt, slack, c.dvx * cf - c.dvz * sf, c.dvx * sf + c.dvz * cf, full);
+    fl.update(dt, slack, full);
     if (ragging) {
       const rd = c.ragdoll;
       const ground = falling ? -Infinity : s?.rv ? c.y - 0.25 : c.groundY ?? 0;
@@ -2102,8 +2042,8 @@ if (isTouch) {
   document.querySelector('.controls-grid').innerHTML =
     '<span><b>Drag</b> anywhere to move</span><span><b>JUMP</b> button</span>' +
     '<span><b>PUNCH</b> / <b>SWING</b></span><span><b>Hold GRAB</b></span>' +
-    '<span><b>KICK</b> (boots bombs)</span><span><b>Drag THROW</b> to aim</span>' +
-    '<span class="wide">Drag from <b>THROW</b> and let go to throw, toss, lob or fire · let go on the button to cancel</span>' +
+    '<span><b>KICK</b></span><span><b>Drag THROW</b> to aim</span>' +
+    '<span class="wide">Drag from <b>THROW</b> and let go to throw, toss or fire · let go on the button to cancel</span>' +
     '<span class="wide"><b>PICK UP</b> ✨ weapons · Mallet <b>SWING</b> spins</span>' +
     '<span class="wide">Hits only daze! <b>Grab &amp; throw</b> buddies over the fence or into the river</span>' +
     '<span class="wide"><b>🎥 Follow</b> cam: drag the right side to look around</span>';
@@ -2409,7 +2349,7 @@ function handleEvent(e) {
       target.floppy?.jiggle(e.big ? 0.8 : 0.5);
     }
     puff(e.x, e.y, e.z, e.big ? 10 : 6, e.w === 'blaster' ? '#ffc79a' : '#ffffff');
-    comicWord(e.x, e.y, e.z, e.big, e.w && !e.big ? WEAPON_INFO[e.w]?.words : null);
+    comicWord(e.x, e.y, e.z, e.big, e.w && (!e.big || e.w === 'gloves') ? WEAPON_INFO[e.w]?.words : null);
     shake = Math.max(shake, e.big ? 0.5 : e.w ? 0.35 : 0.25);
     if (e.big) {
       grassBits(target ? target.x : e.x, target ? target.z : e.z);
@@ -2418,7 +2358,7 @@ function handleEvent(e) {
     sfx.hit(e.big || !!e.w);
     if (e.w === 'pan') sfx.clang();
     if (e.w === 'hammer') sfx.squeak();
-    if (e.w === 'chicken') sfx.squawk();
+    if (e.w === 'gloves') sfx.pow();
   } else if (e.t === 'windup') {
     sfx.heave();
   } else if (e.t === 'swing') {
@@ -2428,12 +2368,12 @@ function handleEvent(e) {
     } else if (e.t === 'pickup') {
     if (c) { c.sq -= 0.4; puff(c.x, 0.2, c.z, 6, '#f3e6d6', 1.5); }
     sfx.pickup();
-    if (WEAPON_INFO[e.w]?.bomb) sfx.fuse(); else sfx.heave();
+    sfx.heave();
   } else if (e.t === 'toss') {
     sfx.whoosh();
   } else if (e.t === 'break') {
     puff(e.x, e.y, e.z, 9, '#e3a867', 2.5);
-    comicWord(e.x, e.y, e.z, false, ['BROKE!', 'CRACK!']);
+    comicWord(e.x, e.y, e.z, false, e.w === 'gloves' ? ['WORN OUT!', 'RIPPED!'] : ['BROKE!', 'CRACK!']);
     sfx.breakIt();
   } else if (e.t === 'pop') {
     puff(e.x, e.y, e.z, 4, '#ffc79a', 1.5);
@@ -2464,37 +2404,11 @@ function handleEvent(e) {
   } else if (e.t === 'fall') {
     if (c && lastStanding(e.id)) { slowMo = SLOW_MO; slowTarget = c; }
     sfx.fall();
-  } else if (e.t === 'bombWarn') {
-    sfx.whistle();
-  } else if (e.t === 'boom') {
-    explosion(e.x, e.y ?? 0.6, e.z, e.w === 'sticky');
-    sfx.boom();
-  } else if (e.t === 'stick') {
-    if (c) { c.sq -= 0.3; c.ouch = 0.6; }
-    puff(e.x, e.y, e.z, 8, '#7dff9a', 2);
-    comicWord(e.x, e.y, e.z, false, ['STUCK!', 'SPLAT!', 'GLOOP!']);
-    sfx.splat();
-  } else if (e.t === 'wake') {
-    // Bat on a dazed critter: the stars pop and they snap back up.
-    if (c) {
-      const h = c.height || 2.3;
-      c.ko = Math.min(c.ko, 0.2);
-      c.sq += 0.35;
-      c.stars.visible = false;
-      for (let i = 0; i < 6; i++) sparkle(c.x, c.y + h + 0.2, c.z);
-      puff(c.x, c.y + h, c.z, 6, '#fff3a0', 2.5);
-      comicWord(c.x, c.y + h * 0.6, c.z, true, ['WAKE UP!']);
-    }
-    sfx.wake();
   } else if (e.t === 'spin') {
     if (c) c.sq -= 0.2;
     sfx.spin();
   } else if (e.t === 'kick') {
     sfx.kick();
-  } else if (e.t === 'kickBomb') {
-    puff(e.x, 0.2, e.z, 5, '#f3e6d6', 2);
-    comicWord(e.x, 0.6, e.z, false, ['BOOT!', 'PUNT!', 'GOAL!']);
-    sfx.boot();
   } else if (e.t === 'hang') {
     if (c) { c.sq -= 0.3; comicWord(c.x, c.y + 1.4, c.z, false, ['GRAB!', 'HANG ON!', 'PHEW!']); }
     sfx.grab();
@@ -2773,7 +2687,7 @@ function aimProfile(s) {
   if (s.h) return arcs.player;
   const info = WEAPON_INFO[s.w];
   if (!info) return arcs.kick;
-  return info.bomb ? arcs.bomb : info.ranged ? arcs.blaster : arcs.weapon;
+  return info.ranged ? arcs.blaster : arcs.weapon;
 }
 
 function updateAimPreview(R) {
@@ -2907,7 +2821,7 @@ function updateCamera(dt, R) {
   applyShake(dt);
 }
 
-// Smooth shake (no per-frame jitter) with a little roll; explosions push it hardest.
+// Smooth shake (no per-frame jitter) with a little roll; big hits push it hardest.
 let shakeT = 0;
 function applyShake(dt) {
   shake *= Math.exp(-dt * 9);
@@ -2960,9 +2874,9 @@ function updateShrinkTimer(playing, shrinking) {
 
 // Context-sensitive prompts: what each button will do right now.
 let hintState = '';
+const koLeftText = (n) => `${n} knockout${n === 1 ? '' : 's'} left`;
 function updateActionHints(me) {
   let grab = 'GRAB', punch = 'PUNCH', toss = 'AIM', kick = 'KICK', hint = '';
-  let kickGlow = false;
   if (me) {
     const near = (snap.items || []).find((it) => it.y < 0.5 && Math.hypot(it.x - me.x, it.z - me.z) < 1.9);
     const info = WEAPON_INFO[me.w];
@@ -2973,20 +2887,18 @@ function updateActionHints(me) {
       toss = 'THROW';
       hint = isTouch ? 'Drag <b>THROW</b> to aim, let go to throw them' : 'Hold <b>L</b> and aim with the mouse, release to throw';
     } else if (info) {
-      punch = me.w === 'blaster' ? 'SHOOT' : info.bomb ? 'THROW' : 'SWING';
-      toss = me.w === 'blaster' ? 'FIRE' : info.bomb ? 'LOB' : 'AIM';
+      punch = me.w === 'blaster' ? 'SHOOT' : info.gloves ? `PUNCH 🥊${me.wu}` : 'SWING';
+      toss = me.w === 'blaster' ? 'FIRE' : 'AIM';
       grab = 'TOSS';
-      if (info.bomb) hint = `${info.label} is lit! ${isTouch ? 'Drag <b>LOB</b> to aim' : 'Hold <b>L</b> to aim, release to lob'} before it blows`;
-      else if (!isTouch) hint = `${info.label}: <b>J</b> ${info.spin ? 'spin attack' : punch.toLowerCase()} · hold <b>L</b> to aim &amp; ${me.w === 'blaster' ? 'fire' : 'toss'}`;
+      const label = info.gloves ? `${info.label} (${koLeftText(me.wu)})` : info.label;
+      if (!isTouch) hint = `${label}: <b>J</b> ${info.spin ? 'spin attack' : info.gloves ? 'punch' : punch.toLowerCase()} · hold <b>L</b> to aim &amp; ${me.w === 'blaster' ? 'fire' : 'toss'}`;
       else if (info.spin) hint = '<b>SWING</b> to spin and bonk everyone around you';
+      else if (info.gloves) hint = `${label}: every <b>PUNCH</b> that lands is a knockout`;
     } else if (near) {
       grab = 'PICK UP';
-      const label = WEAPON_INFO[near.t].label;
-      if (WEAPON_INFO[near.t].bomb) {
-        kick = 'KICK 💣';
-        kickGlow = true;
-        hint = isTouch ? `<b>PICK UP</b> or <b>KICK</b> the ${label}` : `<b>K</b> to pick up the ${label} · <b>F</b> to kick it`;
-      } else hint = isTouch ? `Tap <b>PICK UP</b> for the ${label}` : `Press <b>K</b> to pick up the ${label}`;
+      const info = WEAPON_INFO[near.t];
+      const label = info.gloves && near.u ? `${info.label} (${koLeftText(near.u)})` : info.label;
+      hint = isTouch ? `Tap <b>PICK UP</b> for the ${label}` : `Press <b>K</b> to pick up the ${label}`;
     }
   }
   const key = [grab, punch, toss, kick, hint].join('|');
@@ -2998,8 +2910,7 @@ function updateActionHints(me) {
   $('tKick').innerHTML = kick + keyHint('F');
   $('tThrow').querySelector('.tlabel').innerHTML = toss + keyHint('L');
   $('tGrab').classList.toggle('glow', grab === 'PICK UP');
-  $('tKick').classList.toggle('glow', kickGlow);
-  $('tPunch').classList.toggle('armed', punch === 'SWING' || punch === 'SHOOT' || (punch === 'THROW' && !!me?.w));
+  $('tPunch').classList.toggle('armed', !!me?.w && !me.h);
   $('tThrow').classList.toggle('armed', toss !== 'AIM');
   $('actionHint').innerHTML = hint;
   $('actionHint').classList.toggle('hidden', !hint);
@@ -3009,7 +2920,7 @@ function updateActionHints(me) {
 let appliedTier = null;
 function applyTier(t) {
   appliedTier = t;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, t === 'high' ? 2 : t === 'medium' ? 1.5 : 1.25));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, t === 'high' ? 2 : t === 'medium' ? 1.5 : 1));
   post.setTier(t);
   resize();
   blades.setCount(GRASS_BLADES[t]);
@@ -3020,7 +2931,7 @@ function applyTier(t) {
     sun.shadow.map = null;
   }
   particles.setBudget(t === 'high' ? 1 : t === 'medium' ? 0.7 : 0.4);
-  setFurDetail(t !== 'low');
+  setPlushQuality(t === 'high');
   setGlassQuality(t === 'high');
   skyDome.setOctaves(t === 'low' ? 2 : 4);
 }
@@ -3349,7 +3260,13 @@ function updateInvFx(dt) {
 // ---------- Main loop ----------
 const projV = new THREE.Vector3();
 let lastFrame = performance.now();
+// Touch devices are capped at 60 fps (high-refresh phones would otherwise run at 90-120 and heat up).
+const FRAME_MS = lowPower ? 1000 / 60 : 0;
+let nextFrameAt = 0, looping = true;
 function frame(now) {
+  if (document.hidden) { looping = false; return; }
+  if (now < nextFrameAt - 1) { requestAnimationFrame(frame); return; }
+  nextFrameAt = Math.max(nextFrameAt + FRAME_MS, now);
   const rawDt = (now - lastFrame) / 1000;
   const realDt = Math.min(0.05, rawDt);
   lastFrame = now;
@@ -3455,7 +3372,6 @@ function frame(now) {
   updateActionHints(showDizzy ? me : null);
   updateInvFx(dt);
 
-  FUR_TIME.value = time;
   blades.uniforms.uTime.value = time;
   blades.uniforms.uR.value = R;
   skyDome.uniforms.uTime.value = time;
@@ -3470,4 +3386,11 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-window.__dbg = { crit: () => critters, me: () => myId, tier, applyTier, camera, renderer, scene, post, particles, blades, handleEvent, splash, explosion, setMood: (k) => { moodK = k - 0.01; } };
+// Nothing is drawn while the page is hidden; the loop picks up again when it comes back.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || looping) return;
+  looping = true;
+  lastFrame = nextFrameAt = performance.now();
+  requestAnimationFrame(frame);
+});
+window.__dbg = { crit: () => critters, me: () => myId, tier, applyTier, camera, renderer, scene, post, particles, blades, handleEvent, splash, snap: () => snap, setMood: (k) => { moodK = k - 0.01; } };

@@ -64,7 +64,6 @@ const SHRINK_DURATION = 120;
 const SHRINK_WARN = 15;
 const SPAWN_R = 13;
 const PICKUP_RANGE = 1.9;
-const MAX_GROUND_ITEMS = 20;
 const OBSTACLE_COUNT = 32;
 // The whole edge is fenced except where the river spills off it.
 const GUARD_INSET = 0.25;
@@ -77,15 +76,12 @@ const HANG_OUT = 0.3;
 const HANG_Y = -0.9;
 const HANG_CLIMB = 2.6;
 const HANG_MASH = 0.12;
-// Kicks: quick startup, modest shove; bombs on the ground get booted along it.
+// Kicks: quick startup, modest shove.
 const KICK_STARTUP = 0.1;
 const KICK_COOLDOWN = 0.7;
 const KICK_RANGE = 2.2;
 const KICK_KNOCK = 7;
 const KICK_DIZZY = 15;
-const KICK_BOMB_RANGE = 1.9;
-const KICK_BOMB_SPEED = 17;
-const SKID_FRICTION = 1.2;
 // Aimed releases stay buffered briefly so a throw isn't lost to a cooldown.
 const FIRE_BUFFER = 0.35;
 const AIM_TURN = 22;
@@ -94,20 +90,11 @@ const RIVER_HALF = 1.7;
 const RIVER_FLOW = 6;
 const RIVER_WADE = 0.6;
 const BRIDGE_HALF_LEN = 1.15;
-// Bombs drop from the sky unannounced, land with a lit fuse and can be picked up and thrown.
-// Sticky bombs only light when picked up, and cling to whoever they're thrown at.
-const BOMB_FUSE = 5;
-const BOMB_RADIUS = 3.2;
-// Bombs only shove and daze: heavy dizziness near the centre, never a launch.
-const BOMB_KNOCK = 3.5;
-const BOMB_DIZZY_MIN = 60;
-const BOMB_STUN = 0.7;
-const BOMB_TOSS_SPEED = 12;
-const BOMB_TOSS_VY = 6;
 const WEAPON_TOSS_SPEED = 15;
 const WEAPON_TOSS_VY = 3.5;
-const MAX_BOMBS = 12;
-const STICKY_CHANCE = 0.3;
+// One weapon in play per player; lost ones come back after a short delay.
+const RESTOCK_MIN = 2;
+const RESTOCK_MAX = 4;
 const TEAM_SIZES = [0, 2, 3, 4];
 const FALL_OUT_Y = -14;
 const LOADING_TIME = 1;
@@ -131,21 +118,16 @@ const pinMatches = (pin) => crypto.timingSafeEqual(sha(pin), sha(ADMIN_PIN));
 
 // Melee weapons wind up, then hit a shape: a forward cone, a wide sweep (pan) or a spin (hammer).
 // carry = speed multiplier while held. dizzy defaults to 100 (instant knockout).
-// The bat is the fast one: it only dazes, and hitting someone already dazed wakes them back up.
+// The gloves knock out with every hit (oneKo) and wear out after `kos` knockouts, not swings.
 // windup values must match WEAPON_INFO in public/weapons.js.
 const WEAPONS = {
-  bat: { range: 3.0, cone: 0.2, knock: 7, dizzy: 45, wakes: true, windup: 0.1, cd: 0.36, uses: 12, carry: 0.88, weight: 3 },
-  chicken: { range: 2.9, cone: 0.2, knock: 7, windup: 0.2, cd: 0.6, uses: 8, carry: 0.82, weight: 2 },
-  pan: { range: 3.5, cone: -0.08, sweep: true, knock: 8, windup: 0.3, cd: 0.85, uses: 7, carry: 0.74, weight: 3 },
-  lollipop: { range: 3.7, cone: 0.35, knock: 10, windup: 0.38, cd: 1.0, uses: 6, carry: 0.66, weight: 2 },
-  hammer: { spin: 0.65, turns: 2, radius: 3.4, knock: 11, windup: 0.45, cd: 1.7, uses: 4, carry: 0.55, spinSlow: 0.3, weight: 2 },
-  blaster: { ranged: true, cd: 1.3, uses: 3, speed: 22, knock: 7, dizzy: 100, life: 1.0, carry: 0.9, weight: 1 },
-  bomb: { bomb: true, cd: 0.3, uses: 1, carry: 0.9, weight: 0 },
-  sticky: { bomb: true, sticky: true, cd: 0.3, uses: 1, carry: 0.9, weight: 0 },
+  pan: { range: 3.5, cone: -0.08, sweep: true, knock: 8, windup: 0.3, cd: 0.85, uses: 7, carry: 0.74 },
+  hammer: { spin: 0.65, turns: 2, radius: 3.4, knock: 11, windup: 0.45, cd: 1.7, uses: 4, carry: 0.55, spinSlow: 0.3 },
+  blaster: { ranged: true, cd: 1.3, uses: 3, speed: 22, knock: 7, dizzy: 100, life: 1.0, carry: 0.9 },
+  gloves: { range: 2.6, cone: 0.6, knock: 7, oneKo: true, kos: 3, windup: 0.15, cd: 0.7, carry: 0.95 },
 };
-const WEAPON_BAG = Object.entries(WEAPONS).flatMap(([k, w]) => Array(w.weight).fill(k));
+const SPAWN_TYPES = Object.keys(WEAPONS);
 const WAKE_GRACE = 1.2;
-const START_ITEMS = 12;
 const OBSTACLE_KINDS = [
   { t: 'tree', r: 0.55 },
   { t: 'rock', r: 0.9 },
@@ -179,11 +161,10 @@ function createRoom() {
     items: [],
     shots: [],
     nextItemId: 1,
-    itemT: 0,
+    restock: [], // seconds until each pending replacement weapon drops in
     river: null,
     gaps: [],
     shrinkWarned: false,
-    bombT: 0,
     teamSize: 0,
     winnerTeam: -1,
     secret: savedSecret,
@@ -298,7 +279,6 @@ function roomInfo(room) {
     arcs: {
       g: GRAVITY,
       player: { s: THROW_SPEED, vy: THROW_VY, y: 1.25, off: THROW_OFF, carry: 0.5 },
-      bomb: { s: BOMB_TOSS_SPEED, vy: BOMB_TOSS_VY, y: 1.1, off: 0.9, carry: 0.5 },
       weapon: { s: WEAPON_TOSS_SPEED, vy: WEAPON_TOSS_VY, y: 1.1, off: 0.9, carry: 0.5 },
       blaster: { line: WEAPONS.blaster.speed * WEAPONS.blaster.life, y: 1.15 },
       kick: { line: KICK_RANGE + 1.6, y: 0.15 },
@@ -319,6 +299,7 @@ function setPhase(room, phase) {
   if (phase === 'lobby') {
     room.items = [];
     room.shots = [];
+    room.restock = [];
     for (const p of room.players.values()) { p.weapon = null; p.invT = 0; p.blessed = false; }
   }
   if (phase === 'playing') {
@@ -425,74 +406,6 @@ function assignTeams(room) {
   list.sort(() => Math.random() - 0.5).forEach((p, i) => { p.team = i % nTeams; });
 }
 
-const isBomb = (it) => !!WEAPONS[it.type].bomb;
-
-function dropBombs(room) {
-  const alive = [...room.players.values()].filter((p) => isActive(p) && !p.falling);
-  const live = room.items.filter(isBomb).length;
-  let idleSticky = room.items.filter((it) => it.type === 'sticky' && it.fuse == null).length;
-  const n = 2 + Math.floor(Math.random() * 3);
-  for (let i = 0; i < n && live + i < MAX_BOMBS; i++) {
-    let x, z;
-    if (alive.length && Math.random() < 0.6) {
-      const p = alive[Math.floor(Math.random() * alive.length)];
-      x = p.x + (Math.random() - 0.5) * 9;
-      z = p.z + (Math.random() - 0.5) * 9;
-    } else {
-      const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * room.islandR;
-      x = Math.sin(a) * d; z = Math.cos(a) * d;
-    }
-    const r = Math.hypot(x, z);
-    if (r > room.islandR - 1) { x *= (room.islandR - 1) / r; z *= (room.islandR - 1) / r; }
-    const sticky = idleSticky < 4 && Math.random() < STICKY_CHANCE;
-    if (sticky) idleSticky++;
-    room.items.push({
-      id: room.nextItemId++, type: sticky ? 'sticky' : 'bomb', uses: 1, holder: null,
-      x, y: 24 + i * 4, z, vx: 0, vy: 0, vz: 0, grounded: false, thrownBy: null,
-      rot: r2(Math.random() * Math.PI * 2), fuse: null, stuckTo: null,
-    });
-  }
-  room.events.push({ t: 'bombWarn' });
-}
-
-function stepBombSpawns(room, dt) {
-  room.bombT -= dt;
-  if (room.bombT <= 0) {
-    room.bombT = 3 + Math.random() * 4;
-    dropBombs(room);
-  }
-}
-
-function explode(room, it) {
-  const holder = it.holder && room.players.get(it.holder);
-  if (holder && holder.weapon === it.id) holder.weapon = null;
-  room.items = room.items.filter((x) => x !== it);
-  const bx = it.x, bz = it.z, by = it.y + (it.holder ? 1.1 : 0.4);
-  room.events.push({ t: 'boom', x: r2(bx), y: r2(by), z: r2(bz), w: it.type });
-  for (const o of room.players.values()) {
-    if (!isActive(o) || o.falling || Math.abs(o.y + 0.8 - by) > 3) continue;
-    const dx = o.x - bx, dz = o.z - bz;
-    const d = Math.hypot(dx, dz);
-    if (d > BOMB_RADIUS) continue;
-    if (o.invT > 0) { deflect(room, null, o, o.x, o.y + 1, o.z, it.type); continue; }
-    if (o.heldBy) {
-      const h = room.players.get(o.heldBy);
-      if (h) release(room, h, false);
-    }
-    const a = d > 0.1 ? Math.atan2(dx, dz) : Math.random() * Math.PI * 2;
-    const near = 1 - d / BOMB_RADIUS;
-    hitPlayer(room, null, o, Math.sin(a), Math.cos(a), BOMB_KNOCK * (0.6 + near * 0.4), BOMB_DIZZY_MIN + (100 - BOMB_DIZZY_MIN) * near, o.x, o.y + 1, o.z, it.type);
-    o.stunT = Math.max(o.stunT, BOMB_STUN);
-  }
-  for (const other of room.items) {
-    if (other.holder || other.stuckTo) continue;
-    const dx = other.x - bx, dz = other.z - bz, d = Math.hypot(dx, dz);
-    if (d > BOMB_RADIUS) continue;
-    const a = d > 0.1 ? Math.atan2(dx, dz) : Math.random() * Math.PI * 2;
-    other.vx = Math.sin(a) * 7; other.vz = Math.cos(a) * 7; other.vy = 8; other.grounded = false;
-  }
-}
-
 // ---- Edge fence (open only where the river flows off) ----
 const angDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
@@ -563,9 +476,7 @@ function startRound(room) {
   room.obstacles = makeObstacles(room);
   room.items = [];
   room.shots = [];
-  room.bombT = 6 + Math.random() * 3;
-  room.itemT = 2;
-  for (let i = 0; i < START_ITEMS; i++) spawnItem(room, true);
+  room.restock = [];
   assignTeams(room);
   // Teammates start next to each other.
   list.sort((a, b) => a.team - b.team);
@@ -580,6 +491,8 @@ function startRound(room) {
     p.late = false;
     p.invT = p.invCdT = p.invUsed = 0;
   });
+  const n = roundSize(room);
+  for (let k = 0; room.items.length < n && k < n * 5; k++) spawnItem(room, true);
   drawBlessed(room, list);
   setPhase(room, 'loading');
 }
@@ -612,9 +525,6 @@ function grantInv(room, p) {
     const h = room.players.get(p.heldBy);
     if (h) release(room, h, false);
     p.stunT = 0;
-  }
-  for (const it of room.items) {
-    if (it.stuckTo === p.id) { it.stuckTo = null; it.grounded = false; it.vy = 3; }
   }
   if (p.hang) rescue(room, p);
 }
@@ -690,14 +600,15 @@ function release(room, holder, thrown) {
 
 const weaponItem = (room, p) => (p.weapon ? room.items.find((it) => it.id === p.weapon) : null);
 
-// Shared by punches, kicks, weapon swings, foam balls, thrown weapons and bombs.
+// Shared by punches, kicks, weapon swings, foam balls and thrown weapons.
 // Knockback never carries anyone over the fence; only hanging players get knocked off it.
+// Returns true only when this hit knocked the target out.
 function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz, w = '') {
-  if (o.invT > 0) return deflect(room, attackerId, o, hx, hy, hz, w);
+  if (o.invT > 0) { deflect(room, attackerId, o, hx, hy, hz, w); return false; }
   if (o.hang) {
     letGo(room, o, fx, fz);
     room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: true, a: attackerId, b: o.id, w });
-    return;
+    return false;
   }
   const knock = knockBase * (1 + o.dizzy / 120) * (o.koT > 0 ? 1.4 : 1);
   o.vx += fx * knock;
@@ -710,15 +621,10 @@ function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz,
   if (o.holding) release(room, o, false);
 
   let ko = false;
-  if (WEAPONS[w]?.wakes && (o.dizzy > 0 || o.koT > 0)) {
-    // Spamming the bat wakes a dazed target up: grab them instead.
-    o.dizzy = 0;
-    o.koT = 0;
-    o.wakeT = WAKE_GRACE;
-    room.events.push({ t: 'wake', id: o.id });
-  } else if (o.koT <= 0) {
-    // Just-woken players get a moment of grace so they can't be stun-locked.
-    o.dizzy += dizzyAdd >= 100 && o.wakeT > 0 ? 50 : dizzyAdd;
+  if (o.koT <= 0) {
+    // Just-woken players get a moment of grace so they can't be stun-locked (the gloves ignore it).
+    if (WEAPONS[w]?.oneKo) o.dizzy = 100;
+    else o.dizzy += dizzyAdd >= 100 && o.wakeT > 0 ? 50 : dizzyAdd;
     if (o.dizzy >= 100) {
       o.dizzy = 0;
       o.koT = KO_TIME;
@@ -728,11 +634,13 @@ function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz,
     }
   }
   room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: ko || knockBase > 12, a: attackerId, b: o.id, w });
+  return ko;
 }
 
 // Forward cone hit. sweep (+1/-1) is the side a sideways swing starts from: targets get
-// shoved across, toward the other side, instead of straight ahead.
+// shoved across, toward the other side, instead of straight ahead. Returns how many it knocked out.
 function meleeHits(room, p, range, cone, knock, dizzy, w = '', sweep = 0) {
+  let kos = 0;
   const fx = Math.sin(p.face), fz = Math.cos(p.face);
   let kx = fx, kz = fz;
   if (sweep) {
@@ -748,8 +656,9 @@ function meleeHits(room, p, range, cone, knock, dizzy, w = '', sweep = 0) {
     if (dist > range || Math.abs(o.y - p.y) > 1.4) continue;
     if (dist > 0.01 && (dx * fx + dz * fz) / dist < cone) continue;
     const hx = sweep ? (p.x + o.x) / 2 : p.x + fx * 1.1, hz = sweep ? (p.z + o.z) / 2 : p.z + fz * 1.1;
-    hitPlayer(room, p.id, o, kx, kz, knock, dizzy, hx, p.y + 1.1, hz, w);
+    if (hitPlayer(room, p.id, o, kx, kz, knock, dizzy, hx, p.y + 1.1, hz, w)) kos++;
   }
+  return kos;
 }
 
 // Hammer spin: everyone in the radius, each at most once per spin, knocked straight outward.
@@ -799,12 +708,7 @@ function weaponAttack(room, p) {
   if (!it) { p.weapon = null; return doPunch(room, p); }
   const w = WEAPONS[it.type];
   p.punchCd = w.cd;
-  if (w.bomb) {
-    aimAssist(room, p, 12, 0.6);
-    dropWeapon(room, p, true);
-    p.punchT = 0.25;
-    p.punchArm = 1 - p.punchArm;
-  } else if (w.ranged) {
+  if (w.ranged) {
     aimAssist(room, p, 14, 0.7);
     p.punchT = 0.3;
     p.punchArm = 1 - p.punchArm;
@@ -845,8 +749,9 @@ function weaponStrike(room, p) {
   }
   p.punchT = 0.35;
   room.events.push({ t: 'swing', id: p.id, w: it.type, sd: w.sweep ? p.sweepSide : 0 });
-  meleeHits(room, p, w.range, w.cone, w.knock, w.dizzy ?? 100, it.type, w.sweep ? p.sweepSide : 0);
-  useUp(room, p, it);
+  const kos = meleeHits(room, p, w.range, w.cone, w.knock, w.dizzy ?? 100, it.type, w.sweep ? p.sweepSide : 0);
+  if (w.kos) countKos(room, it, kos, p.x + Math.sin(p.face), p.y + 1.2, p.z + Math.cos(p.face));
+  else useUp(room, p, it);
 }
 
 function stepSpin(room, p, dt) {
@@ -862,50 +767,14 @@ function stepSpin(room, p, dt) {
 
 // ---- Kicks ----
 function startKick(room, p) {
-  if (!p.aim) {
-    // Prefer an enemy in front; otherwise line up on a bomb lying close by.
-    const before = p.face;
-    aimAssist(room, p, KICK_RANGE + 0.4, 0.3);
-    if (p.face === before) {
-      const b = kickableBomb(room, p, -0.2);
-      if (b) p.face = Math.atan2(b.x - p.x, b.z - p.z);
-    }
-  }
+  aimAssist(room, p, KICK_RANGE + 0.4, 0.3);
   p.kickCd = KICK_COOLDOWN;
   p.kickWind = KICK_STARTUP;
   p.kickT = 0.35;
   room.events.push({ t: 'kick', id: p.id });
 }
 
-function kickableBomb(room, p, minDot) {
-  const fx = Math.sin(p.face), fz = Math.cos(p.face);
-  let best = null, bestD = KICK_BOMB_RANGE;
-  for (const it of room.items) {
-    if (!isBomb(it) || it.holder || it.stuckTo || it.y > 0.8 || it.y < -0.3) continue;
-    const dx = it.x - p.x, dz = it.z - p.z, d = Math.hypot(dx, dz);
-    if (d > bestD || (d > 0.3 && (dx * fx + dz * fz) / d < minDot)) continue;
-    bestD = d; best = it;
-  }
-  return best;
-}
-
 function kickStrike(room, p) {
-  const fx = Math.sin(p.face), fz = Math.cos(p.face);
-  const b = kickableBomb(room, p, 0.2);
-  if (b) {
-    // Booted along the ground; kicking an unlit bomb lights it.
-    b.grounded = true;
-    b.skid = true;
-    b.kicked = true;
-    b.y = 0;
-    b.vx = fx * KICK_BOMB_SPEED + p.vx * 0.3;
-    b.vz = fz * KICK_BOMB_SPEED + p.vz * 0.3;
-    b.vy = 0;
-    b.rot = r2(p.face);
-    b.thrownBy = p.id;
-    if (b.fuse == null) b.fuse = BOMB_FUSE;
-    room.events.push({ t: 'kickBomb', id: p.id, x: r2(b.x), z: r2(b.z) });
-  }
   meleeHits(room, p, KICK_RANGE, 0.4, KICK_KNOCK, KICK_DIZZY, 'kick');
 }
 
@@ -983,7 +852,6 @@ function aimedRelease(room, p) {
     if (p.punchCd > 0) return false;
     weaponAttack(room, p);
   } else {
-    // Bombs are lobbed, melee weapons flung.
     dropWeapon(room, p, true);
     p.punchCd = Math.max(p.punchCd, 0.3);
     p.punchT = 0.25;
@@ -993,13 +861,37 @@ function aimedRelease(room, p) {
 }
 
 function useUp(room, p, it) {
-  const fx = Math.sin(p.face), fz = Math.cos(p.face);
   it.uses -= 1;
-  if (it.uses <= 0) {
-    room.items = room.items.filter((x) => x !== it);
-    p.weapon = null;
-    room.events.push({ t: 'break', id: p.id, w: it.type, x: r2(p.x + fx), y: r2(p.y + 1.2), z: r2(p.z + fz) });
-  }
+  if (it.uses <= 0) breakItem(room, it, p.x + Math.sin(p.face), p.y + 1.2, p.z + Math.cos(p.face));
+}
+
+// The gloves wear out after a number of knockouts, wherever they land them (swung or thrown).
+function countKos(room, it, n, x, y, z) {
+  if (!n) return;
+  it.kos += n;
+  if (it.kos >= WEAPONS[it.type].kos) breakItem(room, it, x, y, z);
+}
+
+function breakItem(room, it, x, y, z) {
+  room.items = room.items.filter((o) => o !== it);
+  const h = it.holder && room.players.get(it.holder);
+  if (h && h.weapon === it.id) h.weapon = null;
+  room.events.push({ t: 'break', id: it.holder || it.thrownBy || '', w: it.type, x: r2(x), y: r2(y), z: r2(z) });
+}
+
+// Everyone who started this round and is still connected, bots included.
+const roundSize = (room) => [...room.players.values()].filter((p) => !p.late && !p.away).length;
+const kosLeft = (it) => WEAPONS.gloves.kos - it.kos;
+const heldGlovesLeft = (room, p) => {
+  const it = weaponItem(room, p);
+  return it && it.type === 'gloves' ? kosLeft(it) : 0;
+};
+
+// Equal odds for each weapon, but no more than one pair of gloves per four players.
+function pickWeaponType(room) {
+  const gloves = room.items.filter((it) => it.type === 'gloves').length;
+  const pool = gloves < Math.ceil(roundSize(room) / 4) ? SPAWN_TYPES : SPAWN_TYPES.filter((t) => t !== 'gloves');
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 function spawnItem(room, onGround = false) {
@@ -1011,20 +903,34 @@ function spawnItem(room, onGround = false) {
     if (riverDist(room, x, z) < RIVER_HALF + 0.8) continue;
     if (room.items.some((it) => !it.holder && Math.hypot(it.x - x, it.z - z) < 2)) continue;
     if (onGround && Math.abs(d - SPAWN_R) < 1.5) continue;
-    const type = WEAPON_BAG[Math.floor(Math.random() * WEAPON_BAG.length)];
+    const type = pickWeaponType(room);
     room.items.push({
-      id: room.nextItemId++, type, uses: WEAPONS[type].uses, holder: null,
+      id: room.nextItemId++, type, uses: WEAPONS[type].uses || 0, kos: 0, holder: null,
       x, y: onGround ? 0 : 10, z, vx: 0, vy: 0, vz: 0, grounded: onGround, thrownBy: null,
       rot: r2(Math.random() * Math.PI * 2),
     });
-    return;
+    return true;
   }
+  return false;
+}
+
+// Weapons in play (ground, held and airborne) track the round size: each one lost is replaced
+// after a few seconds, but only while there are fewer weapons than players.
+function stepRestock(room, dt) {
+  const want = roundSize(room);
+  room.restock = room.restock.map((t) => t - dt);
+  const due = room.restock.filter((t) => t <= 0).length;
+  room.restock = room.restock.filter((t) => t > 0);
+  for (let i = 0; i < due; i++) {
+    if (room.items.length < want && !spawnItem(room)) room.restock.push(0.5);
+  }
+  while (room.items.length + room.restock.length < want) room.restock.push(RESTOCK_MIN + Math.random() * (RESTOCK_MAX - RESTOCK_MIN));
 }
 
 function tryPickup(room, p) {
   let best = null, bestD = PICKUP_RANGE;
   for (const it of room.items) {
-    if (it.holder || it.stuckTo || it.y > 1.4 || it.y < -0.5) continue;
+    if (it.holder || it.y > 1.4 || it.y < -0.5) continue;
     const d = Math.hypot(it.x - p.x, it.z - p.z);
     if (d < bestD) { bestD = d; best = it; }
   }
@@ -1032,10 +938,8 @@ function tryPickup(room, p) {
   best.holder = p.id;
   best.thrownBy = null;
   p.weapon = best.id;
-  const light = isBomb(best);
-  if (best.type === 'sticky' && best.fuse == null) best.fuse = BOMB_FUSE;
-  p.punchCd = Math.max(p.punchCd, light ? 0.2 : 0.45);
-  p.heaveT = light ? 0.15 : 0.45;
+  p.punchCd = Math.max(p.punchCd, 0.45);
+  p.heaveT = 0.45;
   room.events.push({ t: 'pickup', id: p.id, w: best.type });
   return true;
 }
@@ -1052,29 +956,15 @@ function dropWeapon(room, p, toss) {
   it.x = p.x + fx * 0.9;
   it.z = p.z + fz * 0.9;
   it.y = p.y + 1.1;
-  // Bombs are lobbed in an arc; weapons are flung flat and fast.
-  const speed = isBomb(it) ? BOMB_TOSS_SPEED : WEAPON_TOSS_SPEED;
-  it.vx = p.vx * 0.5 + (toss ? fx * speed : 0);
-  it.vz = p.vz * 0.5 + (toss ? fz * speed : 0);
-  it.vy = toss ? (isBomb(it) ? BOMB_TOSS_VY : WEAPON_TOSS_VY) : 2;
-  it.skid = it.kicked = false;
+  it.vx = p.vx * 0.5 + (toss ? fx * WEAPON_TOSS_SPEED : 0);
+  it.vz = p.vz * 0.5 + (toss ? fz * WEAPON_TOSS_SPEED : 0);
+  it.vy = toss ? WEAPON_TOSS_VY : 2;
   it.thrownBy = toss ? p.id : null;
   if (toss) room.events.push({ t: 'toss', id: p.id });
 }
 
 function stepItems(room, dt) {
-  const blasts = [];
   for (const it of room.items) {
-    if (it.fuse != null) {
-      it.fuse -= dt;
-      if (it.fuse <= 0) { blasts.push(it); continue; }
-    }
-    if (it.stuckTo) {
-      const v = room.players.get(it.stuckTo);
-      if (v && isActive(v)) { it.x = v.x; it.y = v.y + 1.3; it.z = v.z; continue; }
-      it.stuckTo = null;
-      it.grounded = false;
-    }
     if (it.holder) {
       const h = room.players.get(it.holder);
       if (!h || h.weapon !== it.id) it.holder = null;
@@ -1085,13 +975,6 @@ function stepItems(room, dt) {
       it.x += it.vx * dt;
       it.y += it.vy * dt;
       it.z += it.vz * dt;
-    } else if (it.skid) {
-      // Kicked bombs skid along the ground until friction stops them.
-      it.x += it.vx * dt;
-      it.z += it.vz * dt;
-      const f = Math.exp(-SKID_FRICTION * dt);
-      it.vx *= f; it.vz *= f;
-      if (Math.hypot(it.vx, it.vz) < 1.5) { it.skid = false; it.thrownBy = null; }
     } else {
       const rv = riverAt(room, it.x, it.z);
       if (rv) { it.x += rv.tx * RIVER_FLOW * 0.45 * dt; it.z += rv.tz * RIVER_FLOW * 0.45 * dt; }
@@ -1101,12 +984,11 @@ function stepItems(room, dt) {
       if (!it.grounded) room.events.push({ t: 'itemLand', x: r2(it.x), z: r2(it.z), w: it.type });
       it.y = 0;
       it.vy = 0;
-      if (!it.skid) { it.vx = it.vz = 0; it.thrownBy = null; }
+      it.vx = it.vz = 0;
+      it.thrownBy = null;
       it.grounded = true;
-      if (it.type === 'bomb' && it.fuse == null) it.fuse = BOMB_FUSE;
     } else if (!onIsland) {
       it.grounded = false;
-      it.skid = false;
     }
     if (it.y < 1) guardPush(room, it, 1.3);
     for (const o of room.obstacles) {
@@ -1128,27 +1010,18 @@ function stepItems(room, dt) {
           deflect(room, it.thrownBy, o, it.x, it.y, it.z, it.type);
           it.vx *= -0.25; it.vz *= -0.25; it.vy = 3;
           it.grounded = false;
-        } else if (it.type === 'sticky') {
-          hitPlayer(room, it.thrownBy, o, it.vx / sp, it.vz / sp, 3, 15, it.x, it.y, it.z, 'sticky');
-          it.stuckTo = o.id;
-          it.vx = it.vy = it.vz = 0;
-          room.events.push({ t: 'stick', id: o.id, x: r2(it.x), y: r2(it.y), z: r2(it.z) });
         } else {
-          const bomb = it.type === 'bomb';
-          hitPlayer(room, it.thrownBy, o, it.vx / sp, it.vz / sp, bomb ? 5 : 9, bomb ? 25 : it.type === 'blaster' ? 40 : WEAPONS[it.type].dizzy ?? 100, it.x, it.y, it.z, it.type);
-          // A kicked lit bomb goes off right on whoever it runs into.
-          if (bomb && it.kicked && it.fuse != null) it.fuse = Math.min(it.fuse, 0.12);
+          const ko = hitPlayer(room, it.thrownBy, o, it.vx / sp, it.vz / sp, 9, it.type === 'blaster' ? 40 : WEAPONS[it.type].dizzy ?? 100, it.x, it.y, it.z, it.type);
+          if (ko && WEAPONS[it.type].kos) countKos(room, it, 1, it.x, it.y, it.z);
           it.vx *= -0.25; it.vz *= -0.25; it.vy = 3;
           it.grounded = false;
         }
-        it.skid = it.kicked = false;
         it.thrownBy = null;
         break;
       }
     }
   }
-  for (const it of blasts) explode(room, it);
-  room.items = room.items.filter((it) => it.holder || it.stuckTo || it.y > FALL_OUT_Y);
+  room.items = room.items.filter((it) => it.holder || it.y > FALL_OUT_Y);
 
   for (const s of room.shots) {
     s.life -= dt;
@@ -1171,14 +1044,7 @@ function stepItems(room, dt) {
   }
   room.shots = room.shots.filter((s) => s.life > 0);
 
-  if (room.phase === 'playing') {
-    room.itemT -= dt;
-    const ground = room.items.filter((it) => !it.holder && !isBomb(it)).length;
-    if (room.itemT <= 0) {
-      room.itemT = 1.5 + Math.random() * 2;
-      if (ground < MAX_GROUND_ITEMS) spawnItem(room);
-    }
-  }
+  if (room.phase === 'playing') stepRestock(room, dt);
 }
 
 function tryGrab(room, p) {
@@ -1298,40 +1164,6 @@ function botThink(room, bot, dt) {
     if (d < best) { best = d; target = o; }
   }
 
-  // Boot a bomb lying nearby at the target: get behind it, then kick.
-  if (target && !bot.weapon && bot.kickCd <= 0) {
-    for (const b of room.items) {
-      if (!isBomb(b) || b.holder || b.stuckTo || !b.grounded || b.skid || (b.fuse != null && b.fuse < 1.4)) continue;
-      if (Math.hypot(b.x - bot.x, b.z - bot.z) > 5) continue;
-      const tx = target.x - b.x, tz = target.z - b.z, td = Math.hypot(tx, tz) || 1;
-      if (td > 13) continue;
-      const gx = b.x - (tx / td) * 1.2, gz = b.z - (tz / td) * 1.2;
-      const gd = Math.hypot(gx - bot.x, gz - bot.z);
-      inp.grab = false;
-      if (gd < 0.8) {
-        botAim(inp, tx, tz);
-        inp.kick = true;
-        inp.x = inp.z = 0;
-      } else {
-        inp.x = (gx - bot.x) / gd;
-        inp.z = (gz - bot.z) / gd;
-      }
-      return;
-    }
-  }
-
-  // Run from bombs about to go off (unless already holding one to throw).
-  for (const b of room.items) {
-    if (b.fuse == null || b.fuse > 2.2 || b.holder === bot.id || b.stuckTo === bot.id) continue;
-    const dx = bot.x - b.x, dz = bot.z - b.z, d = Math.hypot(dx, dz);
-    if (d < BOMB_RADIUS + 0.8 && d > 0.01) {
-      inp.x = dx / (d || 1);
-      inp.z = dz / (d || 1);
-      inp.grab = false;
-      return;
-    }
-  }
-
   if (!bot.weapon) {
     let item = null, itemD = 7;
     for (const it of room.items) {
@@ -1361,15 +1193,13 @@ function botThink(room, bot, dt) {
     const w = WEAPONS[held.type];
     inp.grab = false;
     const facing = (dx * Math.sin(bot.face) + dz * Math.cos(bot.face)) / len;
-    const dazed = target.koT > 0 || (w.wakes && target.dizzy > 0);
-    if (!w.bomb && dazed && best < 2.6) {
-      // Hitting again would waste the knockout (or wake them, with the bat): drop it and grab.
+    const dazed = target.koT > 0;
+    if (dazed && best < 2.6) {
+      // Hitting again would waste the knockout: drop it and grab.
       dropWeapon(room, bot, false);
       return;
     }
-    if (w.bomb) {
-      if ((best < 9 && facing > 0.6) || (held.fuse != null && held.fuse < 1.2)) { botAim(inp, dx, dz); inp.fire = true; }
-    } else if (w.ranged) {
+    if (w.ranged) {
       if (best < 6) { inp.x *= 0.2; inp.z *= 0.2; }
       if (best < 12 && bot.punchCd <= 0 && Math.random() < 0.4) { botAim(inp, dx, dz); inp.fire = true; }
     } else if (w.spin) {
@@ -1499,7 +1329,7 @@ function stepPhysics(room, dt) {
       p.vz += (iz * speed - p.vz) * Math.min(1, accel * dt);
 
       if (inp.jump && p.grounded && p.heaveT <= 0) {
-        p.vy = held && !WEAPONS[held.type].ranged && !WEAPONS[held.type].bomb ? JUMP_VEL * 0.75 : JUMP_VEL;
+        p.vy = held && !WEAPONS[held.type].ranged ? JUMP_VEL * 0.75 : JUMP_VEL;
         p.grounded = false;
         room.events.push({ t: 'jump', id: p.id });
       }
@@ -1640,7 +1470,6 @@ function tickRoom(room, dt) {
     }
     stepPhysics(room, dt);
     stepItems(room, dt);
-    stepBombSpawns(room, dt);
 
     const all = [...room.players.values()];
     const standing = all.filter((p) => isActive(p) && !p.falling);
@@ -1679,7 +1508,6 @@ function tickRoom(room, dt) {
 }
 
 const r2 = (v) => Math.round(v * 100) / 100;
-const fuseOf = (it) => (it && it.fuse != null ? r2(it.fuse) : -1);
 function snapshot(room) {
   return {
     t: Math.round(serverClock * 1000) / 1000,
@@ -1715,11 +1543,13 @@ function snapshot(room) {
       lt: p.late ? 1 : 0,
       tm: p.team,
       rv: p.inRiver ? 1 : 0,
-      wf: fuseOf(weaponItem(room, p)),
+      wu: heldGlovesLeft(room, p),
     })),
-    items: room.items.filter((it) => !it.holder).map((it) => ({
-      i: it.id, t: it.type, x: r2(it.x), y: r2(it.y), z: r2(it.z), r: it.rot || 0, f: fuseOf(it), k: it.stuckTo || '', s: it.skid ? 1 : 0,
-    })),
+    items: room.items.filter((it) => !it.holder).map((it) => {
+      const o = { i: it.id, t: it.type, x: r2(it.x), y: r2(it.y), z: r2(it.z), r: it.rot || 0 };
+      if (it.type === 'gloves') o.u = kosLeft(it);
+      return o;
+    }),
     shots: room.shots.map((s) => ({ i: s.id, x: r2(s.x), y: r2(s.y), z: r2(s.z), vx: r2(s.vx), vz: r2(s.vz) })),
   };
 }

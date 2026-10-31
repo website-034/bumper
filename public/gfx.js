@@ -9,9 +9,6 @@ import { FXAAPass } from 'three/addons/postprocessing/FXAAPass.js';
 
 // Visual-only rendering helpers. Nothing here feeds back into gameplay.
 
-// Shell-fur layers live on this layer so the AO pass can skip them (it sees the smooth body hull).
-export const FUR_LAYER = 1;
-
 // ---------- Moods: sunny day, then sunset once the island starts shrinking ----------
 const hex = (h) => new THREE.Color(h);
 export const MOODS = {
@@ -158,12 +155,10 @@ export function makePost(renderer, scene, camera) {
       gtao.updateGtaoMaterial({ radius: 0.7, distanceExponent: 1.4, thickness: 1.2, scale: 1.1, samples: 12 });
       gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
       gtao.blendIntensity = 0.85;
-      const render = gtao.render.bind(gtao);
-      gtao.render = (...a) => { camera.layers.disable(FUR_LAYER); render(...a); camera.layers.enable(FUR_LAYER); };
       composer.addPass(gtao);
     }
     composer.addPass(new ShaderPass(SanitizeShader));
-    // Only genuinely bright things (sparks, fuses, goo, explosions, foam shots) pass the threshold.
+    // Only genuinely bright things (sparks, glows, foam shots) pass the threshold.
     bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), t === 'high' ? 0.75 : 0.6, 0.45, 1.8);
     composer.addPass(bloom);
     composer.addPass(new OutputPass());

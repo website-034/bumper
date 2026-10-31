@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeStars } from './characters.js';
-import { SHELLS, buildCorgi, furry, paint, deform, smooth, glossy, std, mesh, limbGeo, makeEye, rigFrom } from './fluffy.js';
+import { buildCorgi, furry, paint, deform, smooth, glossy, std, mesh, limbGeo, makeEye, rigFrom } from './fluffy.js';
 
 // The playable roster: furry, dressed-up critters built in code. Ids must match ANIMALS in server.js.
 export const FLUFFY = {
@@ -525,7 +525,7 @@ const LOOKS = {
     mouth: [0, -0.32, 0.74],
     build(x) {
       const wool = solid('#f3ead6');
-      const cap = furry(paint(sph(0.7, 40, 24, 0, Math.PI * 2, 0, 1.75), wool), { len: 0.12, shells: SHELLS, density: 16 });
+      const cap = furry(paint(sph(0.7, 40, 24, 0, Math.PI * 2, 0, 1.75), wool), { len: 0.12, density: 16 });
       cap.rotation.x = -0.55;
       cap.scale.set(1.12, 0.95, 1.02);
       cap.position.set(0, 0.04, -0.04);

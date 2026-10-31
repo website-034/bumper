@@ -1,26 +1,16 @@
 import * as THREE from 'three';
-import { woodTexture } from './gfx.js';
+import { mergeRigidParts } from './merge.js';
 
 // len = grip-to-tip length; windup, spin, turns and sweep must match the server's WEAPONS table.
 export const WEAPON_INFO = {
-  bat: { label: 'Baseball Bat', len: 2.25, windup: 0.1, words: ['WHACK!', 'SMACK!', 'HOME RUN!'] },
-  chicken: { label: 'Rubber Chicken', len: 1.8, windup: 0.2, words: ['BAWK!', 'SQUAWK!', 'FLOP!'] },
   pan: { label: 'Frying Pan', len: 1.85, windup: 0.3, sweep: true, words: ['CLANG!', 'DONG!', 'TONK!'] },
-  lollipop: { label: 'Giant Lollipop', len: 2.3, windup: 0.38, words: ['SWEET!', 'THWAP!', 'SUGAR RUSH!'] },
   hammer: { label: 'Squeaky Mallet', len: 2.05, windup: 0.45, spin: 0.65, turns: 2, words: ['BONK!', 'SQUEAK!', 'KA-BONK!'] },
   blaster: { label: 'Foam Blaster', len: 1.2, windup: 0, ranged: true, words: ['SPLAT!', 'FWUMP!', 'PLOP!'] },
-  bomb: { label: 'Bomb', len: 1.2, windup: 0, bomb: true, words: ['KABOOM!', 'BOOM!', 'KA-POW!'] },
-  sticky: { label: 'Sticky Bomb', len: 1.2, windup: 0, bomb: true, sticky: true, words: ['KABLOOEY!', 'SPLOOSH!', 'GLORP-BOOM!'] },
+  // Worn one on each paw; every hit knocks out, and they wear out after 3 knockouts.
+  gloves: { label: 'Boxing Gloves', len: 0.6, windup: 0.15, gloves: true, kos: 3, words: ['KNOCKOUT!', 'K.O.!', 'POW!'] },
 };
-export const BOMB_FUSE = 5;
 
 const mat = (color, opts = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.55, ...opts });
-
-let grainTex = null;
-const grain = () => {
-  if (!grainTex) { grainTex = woodTexture(); grainTex.repeat.set(2, 1); }
-  return grainTex;
-};
 
 function mesh(geo, material) {
   const m = new THREE.Mesh(geo, material);
@@ -32,32 +22,6 @@ function cyl(rTop, rBot, h, material, seg = 18) {
 }
 function lathe(points, material, seg = 28) {
   return mesh(new THREE.LatheGeometry(points.map(([r, y]) => new THREE.Vector2(r, y)), seg), material);
-}
-
-// Chunky cartoon baseball bat: thin taped handle swelling into a fat rounded barrel.
-function buildBat() {
-  const g = new THREE.Group();
-  const wood = new THREE.MeshPhysicalMaterial({ map: grain(), roughness: 0.45, clearcoat: 0.5, clearcoatRoughness: 0.3 });
-  const prof = [[0, -0.2], [0.12, -0.2], [0.13, -0.17], [0.09, -0.13], [0.075, -0.05], [0.075, 0.55], [0.09, 0.85],
-    [0.13, 1.2], [0.19, 1.6], [0.23, 1.95], [0.235, 2.08], [0.2, 2.18], [0.12, 2.24], [0, 2.25]];
-  g.add(lathe(prof, wood));
-  const tape = mat('#8b6fd6', { roughness: 0.85 });
-  for (let i = 0; i < 6; i++) {
-    const wrap = cyl(0.085, 0.085, 0.06, tape);
-    wrap.position.y = -0.02 + i * 0.085;
-    wrap.rotation.z = 0.08;
-    g.add(wrap);
-  }
-  const stripe = mat('#ff8fa3', { roughness: 0.4 });
-  for (const y of [1.45, 1.55]) {
-    const s = cyl(0.18 + (y - 1.45) * 0.4, 0.17 + (y - 1.45) * 0.4, 0.04, stripe, 28);
-    s.position.y = y;
-    g.add(s);
-  }
-  const knot = mesh(new THREE.SphereGeometry(0.05, 10, 8), mat('#b77a3e'));
-  knot.position.set(0.2, 1.8, 0.1);
-  g.add(knot);
-  return g;
 }
 
 function buildPan() {
@@ -112,102 +76,6 @@ function buildHammer() {
   return g;
 }
 
-let swirlTex = null;
-function lollipopTexture() {
-  if (swirlTex) return swirlTex;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = 256;
-  const c = cv.getContext('2d');
-  c.fillStyle = '#ffffff';
-  c.fillRect(0, 0, 256, 256);
-  c.translate(128, 128);
-  const colors = ['#ff6f9a', '#7cc8f0', '#ffcf5a', '#9b86e0'];
-  for (let i = 0; i < 4; i++) {
-    c.beginPath();
-    for (let t = 0; t < 1; t += 0.01) {
-      const a = t * Math.PI * 5 + (i * Math.PI) / 2;
-      const r = t * 128;
-      c.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-    }
-    c.lineWidth = 22;
-    c.strokeStyle = colors[i];
-    c.stroke();
-  }
-  swirlTex = new THREE.CanvasTexture(cv);
-  swirlTex.colorSpace = THREE.SRGBColorSpace;
-  return swirlTex;
-}
-
-function buildLollipop() {
-  const g = new THREE.Group();
-  const stick = cyl(0.06, 0.06, 1.75, mat('#fffaf2', { roughness: 0.6 }));
-  stick.position.y = 0.6;
-  const candyFace = new THREE.MeshPhysicalMaterial({ map: lollipopTexture(), roughness: 0.15, clearcoat: 1, clearcoatRoughness: 0.1 });
-  const candySide = new THREE.MeshPhysicalMaterial({ color: '#ff8fb0', roughness: 0.2, clearcoat: 1 });
-  const candy = mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.24, 40), [candySide, candyFace, candyFace]);
-  candy.rotation.x = Math.PI / 2;
-  candy.position.y = 1.68;
-  const bow = new THREE.Group();
-  const ribbon = mat('#7cc8f0', { roughness: 0.4 });
-  for (const s of [-1, 1]) {
-    const loop = mesh(new THREE.ConeGeometry(0.12, 0.26, 10), ribbon);
-    loop.rotation.z = s * Math.PI / 2;
-    loop.position.x = s * 0.13;
-    bow.add(loop);
-  }
-  bow.add(mesh(new THREE.SphereGeometry(0.06, 10, 8), ribbon));
-  bow.position.y = 0.98;
-  g.add(stick, candy, bow);
-  return g;
-}
-
-// Held by its feet; the floppy body hangs along the swing.
-function buildChicken() {
-  const g = new THREE.Group();
-  const rubbery = (color) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.42, clearcoat: 0.35, clearcoatRoughness: 0.45, sheen: 0.4, sheenRoughness: 0.6, sheenColor: '#ffffff' });
-  const orange = rubbery('#ff9a3d');
-  const rubber = rubbery('#fff1b8');
-  for (const s of [-1, 1]) {
-    const leg = cyl(0.035, 0.03, 0.4, orange);
-    leg.position.set(s * 0.07, 0.05, 0);
-    const toe = mesh(new THREE.ConeGeometry(0.07, 0.14, 6), orange);
-    toe.position.set(s * 0.07, -0.18, 0);
-    toe.rotation.x = Math.PI;
-    g.add(leg, toe);
-  }
-  const body = mesh(new THREE.SphereGeometry(0.34, 22, 16), rubber);
-  body.scale.set(0.9, 1.45, 0.85);
-  body.position.y = 0.68;
-  const wingL = mesh(new THREE.SphereGeometry(0.16, 12, 10), rubber);
-  wingL.scale.set(0.4, 1.1, 0.8);
-  const wingR = wingL.clone();
-  wingL.position.set(-0.3, 0.72, 0);
-  wingR.position.set(0.3, 0.72, 0);
-  const neck = cyl(0.1, 0.14, 0.45, rubber);
-  neck.position.y = 1.28;
-  const head = mesh(new THREE.SphereGeometry(0.2, 18, 14), rubber);
-  head.position.y = 1.58;
-  const beak = mesh(new THREE.ConeGeometry(0.08, 0.22, 10), orange);
-  beak.rotation.x = Math.PI / 2;
-  beak.position.set(0, 1.56, 0.25);
-  const comb = mat('#ff5a6e', { roughness: 0.4 });
-  [[0, 1.8, 0.02, 0.08], [0, 1.77, -0.09, 0.065], [0, 1.77, 0.12, 0.065]].forEach(([x, y, z, r]) => {
-    const c = mesh(new THREE.SphereGeometry(r, 10, 8), comb);
-    c.position.set(x, y, z);
-    g.add(c);
-  });
-  const wattle = mesh(new THREE.SphereGeometry(0.05, 8, 6), comb);
-  wattle.position.set(0, 1.44, 0.18);
-  const eyeMat = mat('#2e2438', { roughness: 0.2 });
-  for (const s of [-1, 1]) {
-    const eye = mesh(new THREE.SphereGeometry(0.035, 8, 6), eyeMat);
-    eye.position.set(s * 0.12, 1.63, 0.14);
-    g.add(eye);
-  }
-  g.add(body, wingL, wingR, neck, head, beak, wattle);
-  return g;
-}
-
 function buildBlaster() {
   const g = new THREE.Group();
   const teal = mat('#7cc8f0', { roughness: 0.35 });
@@ -229,70 +97,66 @@ function buildBlaster() {
   return g;
 }
 
-// Round cartoon bomb sitting on its base (origin at the bottom) with a curly fuse.
-// The sticky version is translucent slime-green, softly glowing, with goo drips.
-function buildBomb(sticky) {
+// ---------- Boxing gloves ----------
+// Every glove shares the same two materials (red leather, white cuff and laces), and its parts
+// merge into one mesh per material, so a glove costs two draw calls.
+let gloveMats = null;
+const gloveMaterials = () => (gloveMats ||= {
+  red: mat('#e8333f', { roughness: 0.38 }),
+  white: mat('#fff7ee', { roughness: 0.6 }),
+});
+
+// One chunky cartoon glove centred on the paw: knuckles face +z, the cuff trails back toward
+// the wrist and the thumb sits on the inner side (side -1 = left paw).
+export function buildGlove(side = 1) {
+  const { red, white } = gloveMaterials();
   const g = new THREE.Group();
-  const bodyMat = sticky
-    ? mat('#6dff8e', { roughness: 0.2, emissive: '#2bff6a', emissiveIntensity: 0.6, transparent: true, opacity: 0.92 })
-    : mat('#3b3552', { roughness: 0.3, metalness: 0.1, emissive: '#ff3b3b', emissiveIntensity: 0 });
-  const body = mesh(new THREE.SphereGeometry(0.55, 22, 16), bodyMat);
-  body.position.y = 0.55;
-  const shine = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.7 }));
-  shine.position.set(-0.22, 0.82, 0.36);
-  shine.scale.set(1, 1.4, 0.5);
-  const cap = cyl(0.17, 0.21, 0.18, mat(sticky ? '#2f9e57' : '#9a94b4', { metalness: 0.4, roughness: 0.4 }), 12);
-  cap.position.y = 1.12;
-  g.add(body, shine, cap);
-  if (sticky) {
-    const goo = mat('#5cf07e', { roughness: 0.15, emissive: '#2bff6a', emissiveIntensity: 3 });
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + 0.3;
-      const d = mesh(new THREE.SphereGeometry(0.1 + (i % 3) * 0.03, 8, 6), goo);
-      d.position.set(Math.cos(a) * 0.5, 0.35 - (i % 2) * 0.15, Math.sin(a) * 0.5);
-      d.scale.y = 1.6;
-      g.add(d);
+  const mitt = mesh(new THREE.SphereGeometry(0.24, 20, 16), red);
+  mitt.scale.set(1, 0.88, 1.15);
+  mitt.position.z = 0.07;
+  const thumb = mesh(new THREE.SphereGeometry(0.1, 14, 10), red);
+  thumb.scale.set(0.85, 1, 1.5);
+  thumb.position.set(-side * 0.2, 0.03, 0.08);
+  thumb.rotation.y = -side * 0.35;
+  // Red tongue under the laces, along the back of the cuff.
+  const tongue = mesh(new THREE.BoxGeometry(0.09, 0.04, 0.22), red);
+  tongue.position.set(0, 0.155, -0.17);
+  const cuff = cyl(0.17, 0.155, 0.2, white, 18);
+  cuff.rotation.x = Math.PI / 2;
+  cuff.position.z = -0.17;
+  const rim = mesh(new THREE.TorusGeometry(0.16, 0.035, 8, 20), white);
+  rim.position.z = -0.27;
+  g.add(mitt, thumb, tongue, cuff, rim);
+  for (const z of [-0.1, -0.17, -0.24]) {
+    for (const s of [-1, 1]) {
+      const lace = mesh(new THREE.BoxGeometry(0.13, 0.018, 0.022), white);
+      lace.position.set(0, 0.18, z);
+      lace.rotation.y = s * 0.55;
+      g.add(lace);
     }
   }
-  const fuse = new THREE.Group();
-  fuse.position.y = 1.2;
-  const rope = cyl(0.04, 0.04, 0.4, mat('#e7c89b'), 6);
-  rope.position.y = 0.2;
-  fuse.add(rope);
-  fuse.rotation.z = -0.35;
-  const spark = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffd15a').multiplyScalar(6) }));
-  spark.position.y = 0.42;
-  fuse.add(spark);
-  g.add(fuse);
-  g.userData = { bodyMat, fuse, rope, spark, sticky, glow: sticky ? 0.45 : 0 };
+  mergeRigidParts(g);
   return g;
 }
 
-// Lit bombs flicker their spark, burn the fuse down and flash faster as they near zero.
-export function animateBomb(b, fuse, time) {
-  const u = b.userData;
-  if (!u || !u.fuse) return;
-  const lit = fuse >= 0;
-  u.spark.visible = lit;
-  const left = lit ? Math.max(0.08, fuse / BOMB_FUSE) : 1;
-  u.rope.scale.y = left;
-  u.rope.position.y = 0.2 * left;
-  u.spark.position.y = 0.42 * left;
-  if (lit) u.spark.scale.setScalar(0.7 + Math.random() * 0.9);
-  const rate = lit ? 3 + (1 - left) * 18 : 0;
-  const flash = lit ? Math.max(0, Math.sin(time * rate)) : 0;
-  u.bodyMat.emissiveIntensity = u.glow + flash * (u.sticky ? 0.5 : 0.7);
-  if (lit && fuse < 1) b.scale.setScalar(1 + Math.sin(time * 40) * 0.05);
-  else b.scale.setScalar(1);
+// The pair as it lies on the ground or flies through the air.
+function buildGloves() {
+  const g = new THREE.Group();
+  for (const side of [-1, 1]) {
+    const glove = buildGlove(side);
+    glove.position.set(side * 0.24, 0, side * 0.05);
+    glove.rotation.y = side * 0.3;
+    g.add(glove);
+  }
+  return g;
 }
 
-const BUILDERS = {
-  bat: buildBat, pan: buildPan, hammer: buildHammer, lollipop: buildLollipop, chicken: buildChicken, blaster: buildBlaster,
-  bomb: () => buildBomb(false), sticky: () => buildBomb(true),
-};
+const BUILDERS = { pan: buildPan, hammer: buildHammer, blaster: buildBlaster, gloves: buildGloves };
 
 export function buildWeapon(type) {
-  return (BUILDERS[type] || buildBat)();
+  const w = (BUILDERS[type] || buildPan)();
+  mergeRigidParts(w);
+  return w;
 }
 
 const ringGeo = new THREE.RingGeometry(0.85, 1.0, 40);
@@ -300,19 +164,18 @@ const glowGeo = new THREE.CircleGeometry(0.85, 40);
 
 // A weapon lying on the island with a glowing "pick me up" ring.
 export function buildPickup(type) {
-  const info = WEAPON_INFO[type] || WEAPON_INFO.bat;
+  const info = WEAPON_INFO[type] || WEAPON_INFO.pan;
   const root = new THREE.Group();
   const holder = new THREE.Group();
   const w = buildWeapon(type);
-  if (!info.ranged && !info.bomb) {
+  if (!info.ranged && !info.gloves) {
     w.rotation.z = Math.PI / 2;
     w.position.x = info.len / 2;
   }
   holder.add(w);
-  holder.position.y = info.bomb ? 0 : type === 'blaster' ? 0.1 : 0.28;
-  const s = info.bomb ? 0.85 : Math.max(1, info.len / 1.7);
-  const ringColor = info.sticky ? '#7dff9a' : info.bomb ? '#ffb38a' : '#fff3a0';
-  const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: ringColor, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
+  holder.position.y = type === 'blaster' ? 0.1 : info.gloves ? 0.22 : 0.28;
+  const s = Math.max(1, info.len / 1.7);
+  const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: '#fff3a0', transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.03;
   ring.scale.setScalar(s);

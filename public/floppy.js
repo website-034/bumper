@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 // Visual-only secondary motion shared by every critter rig: spring chains for ears, tails and
-// cloth, a lagging head, belly jiggle, fur that trails fast motion and a verlet ragdoll for
+// cloth, a lagging head, belly jiggle and a verlet ragdoll for
 // knockouts, throws and falls. Nothing here feeds back into gameplay.
 const H = 1 / 120; // fixed step so the springs behave the same at any frame rate
 const MAX_STEPS = 6;
@@ -291,7 +291,7 @@ export function poseRagdoll(rig, rd, w) {
 export function ragdollHead(rd, out) { return out.copy(rd.p[HD]); }
 
 // ---------- Per-rig secondary motion ----------
-export function makeFloppy(rig, { body, headFur, flops = [], furGroups = [] }) {
+export function makeFloppy(rig, { body, headFur, flops = [] }) {
   const chains = flops.map(({ obj, dir, len, kind = 'ear', at, rotate = true }) => {
     const h = hinge(obj, at);
     const c = new Chain(h, dir, len, kind, rotate);
@@ -306,13 +306,12 @@ export function makeFloppy(rig, { body, headFur, flops = [], furGroups = [] }) {
     hx: 0, hz: 0, hvx: 0, hvz: 0, tx: 0, tz: 0,
     extra: new THREE.Vector3(),
     j: 0, jv: 0,
-    furLag: 0,
     active: true,
     setJelly(ox, oz) { fl.tx = oz * 1.1; fl.tz = -ox * 1.1; },
     kickHead(x, z) { fl.hvx += x; fl.hvz += z; },
     jiggle(a) { fl.jv -= 9 * a; },
-    // dt, slack (0 standing .. 1 limp), lvx/lvz: velocity in the critter's own frame, full: low-tier cutoff
-    update(dt, slack, lvx, lvz, full) {
+    // dt, slack (0 standing .. 1 limp), full: low-tier cutoff
+    update(dt, slack, full) {
       // Head follows the body's wobble a beat late, with a little overshoot.
       fl.hvx += ((fl.tx - fl.hx) * 110 - fl.hvx * 9) * dt;
       fl.hvz += ((fl.tz - fl.hz) * 110 - fl.hvz * 9) * dt;
@@ -326,13 +325,6 @@ export function makeFloppy(rig, { body, headFur, flops = [], furGroups = [] }) {
       const j = Math.max(-0.6, Math.min(0.6, fl.j));
       body.scale.set(bodyScale.x * (1 - j * 0.12), bodyScale.y * (1 + j * 0.15), bodyScale.z * (1 - j * 0.12));
       if (headFur) headFur.scale.set(headScale.x * (1 - j * 0.06), headScale.y * (1 + j * 0.03), headScale.z);
-
-      // Fur trails fast motion: outer shells shift back against the velocity.
-      const lag = full ? 1 : 0;
-      for (const g of furGroups) {
-        const len = g.userData.fur || 0.06;
-        g.userData.setLag?.(-Math.max(-8, Math.min(8, lvx)) * len * 0.07 * lag, -Math.max(-8, Math.min(8, lvz)) * len * 0.07 * lag);
-      }
       fl.slack = slack;
       fl.full = full;
     },
