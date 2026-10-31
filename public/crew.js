@@ -236,11 +236,18 @@ function strawHat() {
   return g;
 }
 
+const glass = new THREE.MeshPhysicalMaterial({
+  color: '#e8f6ff', transparent: true, opacity: 0.2, roughness: 0.04, clearcoat: 1, clearcoatRoughness: 0.02, depthWrite: false,
+  ior: 1.45, specularIntensity: 1, envMapIntensity: 1.4, thickness: 0.25,
+});
+// High tier: real refraction through the bubble. Other tiers: a cheap see-through glaze.
+export function setGlassQuality(high) {
+  glass.transmission = high ? 1 : 0;
+  glass.opacity = high ? 1 : 0.2;
+}
+
 function bubbleHelmet() {
   const g = new THREE.Group();
-  const glass = new THREE.MeshPhysicalMaterial({
-    color: '#e8f6ff', transparent: true, opacity: 0.2, roughness: 0.04, clearcoat: 1, clearcoatRoughness: 0.02, depthWrite: false,
-  });
   const bubble = mesh(sph(1.0, 40, 28), glass);
   bubble.castShadow = false;
   bubble.renderOrder = 2;

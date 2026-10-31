@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { makeStars } from './characters.js';
 import { makeFloppy } from './floppy.js';
+import { FUR_LAYER } from './gfx.js';
 
 // Cowboy Corgi plus the shell-fur toolkit the rest of the crew (crew.js) is built from.
 export const SHELLS = matchMedia('(pointer: coarse)').matches ? 9 : 14;
@@ -49,16 +50,35 @@ function shellMaterial(layer, shells, len, density) {
   m.onBeforeCompile = (shader) => {
     shader.uniforms.furPush = { value: push };
     shader.uniforms.furDroop = { value: droop };
-    shader.vertexShader = 'uniform float furPush;\nuniform float furDroop;\n' + shader.vertexShader.replace(
+    shader.uniforms.furRim = { value: 0.55 * t * t };
+    shader.uniforms.furTime = FUR_TIME;
+    shader.vertexShader = 'uniform float furPush;\nuniform float furDroop;\nuniform float furTime;\n' + shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
        transformed += normal * furPush;
-       transformed.y -= furDroop;`,
+       transformed.y -= furDroop;
+       transformed.xz += vec2(sin(furTime * 2.3 + position.y * 9.0 + position.x * 6.0), cos(furTime * 1.9 + position.z * 8.0)) * furPush * 0.18;`,
+    );
+    // Sheen: the outer tips catch light around the silhouette, inner shells stay darker (fake AO).
+    shader.fragmentShader = 'uniform float furRim;\n' + shader.fragmentShader.replace(
+      '#include <opaque_fragment>',
+      `outgoingLight += diffuseColor.rgb * furRim * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.5);
+       #include <opaque_fragment>`,
     );
   };
   m.customProgramCacheKey = () => 'fur-shell';
+  m.userData.layer = layer;
+  m.visible = furFull || layer % 2 === 0;
   shellMats.set(key, m);
   return m;
+}
+
+export const FUR_TIME = { value: 0 };
+let furFull = true;
+// Low tier draws every other shell: half the fur cost, same silhouette.
+export function setFurDetail(full) {
+  furFull = full;
+  for (const m of shellMats.values()) m.visible = full || m.userData.layer % 2 === 0;
 }
 
 const skinMats = new Map();
@@ -78,6 +98,7 @@ export function furry(geometry, { len = 0.07, shells = SHELLS, density = 28 } = 
   for (let i = 1; i <= shells; i++) {
     const shell = new THREE.Mesh(geometry, shellMaterial(i, shells, len, density));
     shell.receiveShadow = true;
+    shell.layers.set(FUR_LAYER);
     group.add(shell);
   }
   group.userData.fur = len;

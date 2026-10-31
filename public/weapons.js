@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { woodTexture } from './gfx.js';
 
 // len = grip-to-tip length; windup, spin, turns and sweep must match the server's WEAPONS table.
 export const WEAPON_INFO = {
@@ -15,6 +16,12 @@ export const BOMB_FUSE = 5;
 
 const mat = (color, opts = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.55, ...opts });
 
+let grainTex = null;
+const grain = () => {
+  if (!grainTex) { grainTex = woodTexture(); grainTex.repeat.set(2, 1); }
+  return grainTex;
+};
+
 function mesh(geo, material) {
   const m = new THREE.Mesh(geo, material);
   m.castShadow = true;
@@ -30,7 +37,7 @@ function lathe(points, material, seg = 28) {
 // Chunky cartoon baseball bat: thin taped handle swelling into a fat rounded barrel.
 function buildBat() {
   const g = new THREE.Group();
-  const wood = mat('#e2a564', { roughness: 0.42 });
+  const wood = new THREE.MeshPhysicalMaterial({ map: grain(), roughness: 0.45, clearcoat: 0.5, clearcoatRoughness: 0.3 });
   const prof = [[0, -0.2], [0.12, -0.2], [0.13, -0.17], [0.09, -0.13], [0.075, -0.05], [0.075, 0.55], [0.09, 0.85],
     [0.13, 1.2], [0.19, 1.6], [0.23, 1.95], [0.235, 2.08], [0.2, 2.18], [0.12, 2.24], [0, 2.25]];
   g.add(lathe(prof, wood));
@@ -58,13 +65,13 @@ function buildPan() {
   const handle = lathe([[0, -0.15], [0.08, -0.15], [0.09, -0.1], [0.075, 0.6], [0.06, 0.78], [0, 0.78]], mat('#7a4f36', { roughness: 0.8 }));
   const hole = mesh(new THREE.TorusGeometry(0.05, 0.018, 8, 16), mat('#3d2a20'));
   hole.position.y = -0.05;
-  const iron = mat('#4a4860', { roughness: 0.35, metalness: 0.45 });
+  const iron = mat('#55536b', { roughness: 0.32, metalness: 0.85 });
   const neck = cyl(0.05, 0.06, 0.3, iron);
   neck.position.y = 0.88;
   // Pan bowl, built flat then stood up so its face points forward when swung.
   const bowl = new THREE.Group();
   const shell = lathe([[0, 0], [0.5, 0], [0.56, 0.04], [0.6, 0.16], [0.56, 0.17], [0.52, 0.06], [0, 0.06]], iron, 36);
-  const inner = cyl(0.51, 0.51, 0.02, mat('#9d9bbd', { roughness: 0.2, metalness: 0.6 }), 36);
+  const inner = cyl(0.51, 0.51, 0.02, mat('#a9a7c6', { roughness: 0.16, metalness: 0.95 }), 36);
   inner.position.y = 0.065;
   const egg = new THREE.Group();
   const white = mesh(new THREE.CylinderGeometry(0.2, 0.22, 0.03, 20), mat('#ffffff', { roughness: 0.3 }));
@@ -157,8 +164,9 @@ function buildLollipop() {
 // Held by its feet; the floppy body hangs along the swing.
 function buildChicken() {
   const g = new THREE.Group();
-  const orange = mat('#ff9a3d', { roughness: 0.45 });
-  const rubber = mat('#fff1b8', { roughness: 0.35 });
+  const rubbery = (color) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.42, clearcoat: 0.35, clearcoatRoughness: 0.45, sheen: 0.4, sheenRoughness: 0.6, sheenColor: '#ffffff' });
+  const orange = rubbery('#ff9a3d');
+  const rubber = rubbery('#fff1b8');
   for (const s of [-1, 1]) {
     const leg = cyl(0.035, 0.03, 0.4, orange);
     leg.position.set(s * 0.07, 0.05, 0);
@@ -226,7 +234,7 @@ function buildBlaster() {
 function buildBomb(sticky) {
   const g = new THREE.Group();
   const bodyMat = sticky
-    ? mat('#6dff8e', { roughness: 0.25, emissive: '#2bff6a', emissiveIntensity: 0.45, transparent: true, opacity: 0.92 })
+    ? mat('#6dff8e', { roughness: 0.2, emissive: '#2bff6a', emissiveIntensity: 0.6, transparent: true, opacity: 0.92 })
     : mat('#3b3552', { roughness: 0.3, metalness: 0.1, emissive: '#ff3b3b', emissiveIntensity: 0 });
   const body = mesh(new THREE.SphereGeometry(0.55, 22, 16), bodyMat);
   body.position.y = 0.55;
@@ -237,7 +245,7 @@ function buildBomb(sticky) {
   cap.position.y = 1.12;
   g.add(body, shine, cap);
   if (sticky) {
-    const goo = mat('#5cf07e', { roughness: 0.2, emissive: '#2bff6a', emissiveIntensity: 0.35 });
+    const goo = mat('#5cf07e', { roughness: 0.15, emissive: '#2bff6a', emissiveIntensity: 3 });
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2 + 0.3;
       const d = mesh(new THREE.SphereGeometry(0.1 + (i % 3) * 0.03, 8, 6), goo);
@@ -252,7 +260,7 @@ function buildBomb(sticky) {
   rope.position.y = 0.2;
   fuse.add(rope);
   fuse.rotation.z = -0.35;
-  const spark = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), new THREE.MeshBasicMaterial({ color: '#ffd15a' }));
+  const spark = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffd15a').multiplyScalar(6) }));
   spark.position.y = 0.42;
   fuse.add(spark);
   g.add(fuse);
@@ -317,7 +325,7 @@ export function buildPickup(type) {
 }
 
 const shotGeo = new THREE.SphereGeometry(0.24, 14, 10);
-const shotMat = new THREE.MeshStandardMaterial({ color: '#ffa45c', emissive: '#ff8a3d', emissiveIntensity: 0.4, roughness: 0.6 });
+const shotMat = new THREE.MeshStandardMaterial({ color: '#ffa45c', emissive: '#ff8a3d', emissiveIntensity: 4, roughness: 0.6 });
 export function buildShot() {
   const m = new THREE.Mesh(shotGeo, shotMat);
   m.castShadow = true;

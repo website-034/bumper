@@ -1,5 +1,6 @@
 ﻿const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const path = require('path');
 const http = require('http');
 const express = require('express');
@@ -102,10 +103,24 @@ const MAX_BOMBS = 12;
 const STICKY_CHANCE = 0.3;
 const TEAM_SIZES = [0, 2, 3, 4];
 const FALL_OUT_Y = -14;
+const LOADING_TIME = 2;
 const COUNTDOWN = 3;
 const ROUND_OVER_TIME = 5;
 const MAX_PLAYERS = 8;
 const ROOM_CODE = 'ghouse';
+const INV_TIME = 10;
+
+// Admin-only settings for the player named "ghouse". Kept outside the room so they survive
+// the room being dropped when everyone leaves. Never sent in 'room' or 'state'.
+const ADMIN_NAME = 'ghouse';
+const ADMIN_PIN = process.env.GHOUSE_PIN || '';
+const PIN_MAX_FAILS = 5;
+const PIN_LOCK_MS = 60000;
+const pinFails = new Map(); // ip -> { n, until }
+const savedSecret = { blessed: 0, includeMe: true, invBtn: false, invCd: 30, invUses: 2 };
+const isAdmin = (p) => !!p && !p.isBot && p.name.trim().toLowerCase() === ADMIN_NAME;
+const sha = (s) => crypto.createHash('sha256').update(String(s)).digest();
+const pinMatches = (pin) => crypto.timingSafeEqual(sha(pin), sha(ADMIN_PIN));
 
 // Melee weapons wind up, then hit a shape: a forward cone, a wide sweep (pan) or a spin (hammer).
 // carry = speed multiplier while held. dizzy defaults to 100 (instant knockout).
@@ -145,7 +160,7 @@ function createRoom() {
     code: ROOM_CODE,
     hostId: null,
     players: new Map(),
-    phase: 'lobby', // lobby | countdown | playing | roundover
+    phase: 'lobby', // lobby | loading | countdown | playing | roundover
     phaseTime: 0,
     roundTime: 0,
     roundPlayers: 0,
@@ -164,6 +179,7 @@ function createRoom() {
     bombT: 0,
     teamSize: 0,
     winnerTeam: -1,
+    secret: savedSecret,
   };
   rooms.set(room.code, room);
   return room;
@@ -242,6 +258,13 @@ function addPlayer(room, id, name, animal, isBot = false) {
     team: -1,
     input: { x: 0, z: 0, grab: false, punch: false, jump: false, kick: false, fire: false, aim: false, ax: 0, az: 1 },
     botT: 0,
+    // Private: only ever sent to this player's own socket.
+    invT: 0,
+    invCdT: 0,
+    invUsed: 0,
+    blessed: false,
+    adm: false,
+    pvKey: '{}',
   };
   room.players.set(id, p);
   if (!room.hostId && !isBot) room.hostId = id;
@@ -286,7 +309,13 @@ function setPhase(room, phase) {
   if (phase === 'lobby') {
     room.items = [];
     room.shots = [];
-    for (const p of room.players.values()) p.weapon = null;
+    for (const p of room.players.values()) { p.weapon = null; p.invT = 0; p.blessed = false; }
+  }
+  if (phase === 'playing') {
+    for (const p of room.players.values()) {
+      if (p.blessed && isActive(p)) grantInv(room, p);
+      p.blessed = false;
+    }
   }
   broadcastRoom(room);
 }
@@ -435,6 +464,7 @@ function explode(room, it) {
     const dx = o.x - bx, dz = o.z - bz;
     const d = Math.hypot(dx, dz);
     if (d > BOMB_RADIUS) continue;
+    if (o.invT > 0) { deflect(room, null, o, o.x, o.y + 1, o.z, it.type); continue; }
     if (o.heldBy) {
       const h = room.players.get(o.heldBy);
       if (h) release(room, h, false);
@@ -538,8 +568,84 @@ function startRound(room) {
     resetBody(p);
     p.state = 'alive';
     p.late = false;
+    p.invT = p.invCdT = p.invUsed = 0;
   });
-  setPhase(room, 'countdown');
+  drawBlessed(room, list);
+  setPhase(room, 'loading');
+}
+
+function shuffled(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Blessed players get the special loading screen and invincibility once play begins.
+// Each human is told privately; nobody else learns who was picked.
+function drawBlessed(room, list) {
+  const sec = room.secret;
+  const pool = list.filter((p) => sec.includeMe || !isAdmin(p));
+  const picks = new Set(shuffled(pool).slice(0, Math.min(sec.blessed, pool.length)));
+  for (const p of list) {
+    p.blessed = picks.has(p);
+    if (p.blessed && !p.isBot) io.to(p.id).emit('pvLoad', { video: true });
+  }
+}
+
+function grantInv(room, p) {
+  p.invT = INV_TIME;
+  p.koT = p.stunT = p.dizzy = p.thrownT = 0;
+  if (p.heldBy) {
+    const h = room.players.get(p.heldBy);
+    if (h) release(room, h, false);
+    p.stunT = 0;
+  }
+  for (const it of room.items) {
+    if (it.stuckTo === p.id) { it.stuckTo = null; it.grounded = false; it.vy = 3; }
+  }
+  if (p.hang) rescue(room, p);
+}
+
+// Put an invincible player who ended up over the edge back at the nearest safe spot on the island.
+function rescue(room, p) {
+  const a0 = Math.atan2(p.x, p.z);
+  const r0 = Math.min(Math.hypot(p.x, p.z), fenceR(room) - 1.5);
+  const safe = (x, z) => riverDist(room, x, z) > RIVER_HALF + 1
+    && !room.obstacles.some((o) => obstacleActive(room, o) && Math.hypot(o.x - x, o.z - z) < o.r + BODY_R + 0.3);
+  let best = null, bestD = Infinity, fallback = { x: 0, z: 0 }, fallbackRv = -1;
+  for (let r = Math.max(0, r0); r >= 0; r -= 1.5) {
+    for (let k = -12; k <= 12; k++) {
+      const a = a0 + k * 0.08;
+      const x = Math.sin(a) * r, z = Math.cos(a) * r;
+      const rvd = riverDist(room, x, z);
+      if (rvd > fallbackRv) { fallbackRv = rvd; fallback = { x, z }; }
+      if (!safe(x, z)) continue;
+      const d = Math.hypot(x - p.x, z - p.z);
+      if (d < bestD) { bestD = d; best = { x, z }; }
+    }
+  }
+  const spot = best || fallback;
+  p.x = spot.x; p.z = spot.z; p.y = 0;
+  p.vx = p.vy = p.vz = 0;
+  p.grounded = true;
+  p.falling = p.hang = false;
+  p.thrownT = p.climbT = p.stunT = 0;
+}
+
+function useInvButton(room, p) {
+  const sec = room.secret;
+  if (!sec.invBtn || room.phase !== 'playing' || !isActive(p) || p.invCdT > 0 || p.invUsed >= sec.invUses) return;
+  p.invUsed += 1;
+  p.invCdT = sec.invCd;
+  grantInv(room, p);
+}
+
+// An invincible target: the hit lands as a harmless bounce for everyone to see.
+function deflect(room, attackerId, o, hx, hy, hz, w = '') {
+  room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: false, a: attackerId, b: o.id, w, df: 1 });
 }
 
 const isActive = (p) => p.state === 'alive';
@@ -577,6 +683,7 @@ const weaponItem = (room, p) => (p.weapon ? room.items.find((it) => it.id === p.
 // Shared by punches, kicks, weapon swings, foam balls, thrown weapons and bombs.
 // Knockback never carries anyone over the fence; only hanging players get knocked off it.
 function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz, w = '') {
+  if (o.invT > 0) return deflect(room, attackerId, o, hx, hy, hz, w);
   if (o.hang) {
     letGo(room, o, fx, fz);
     room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: true, a: attackerId, b: o.id, w });
@@ -1007,7 +1114,11 @@ function stepItems(room, dt) {
         if (o.id === it.thrownBy || !isActive(o) || o.falling || o.heldBy) continue;
         if (Math.abs(o.y + 0.9 - it.y) > 1.3 || Math.hypot(o.x - it.x, o.z - it.z) > BODY_R + 0.4) continue;
         const sp = Math.hypot(it.vx, it.vz);
-        if (it.type === 'sticky') {
+        if (o.invT > 0) {
+          deflect(room, it.thrownBy, o, it.x, it.y, it.z, it.type);
+          it.vx *= -0.25; it.vz *= -0.25; it.vy = 3;
+          it.grounded = false;
+        } else if (it.type === 'sticky') {
           hitPlayer(room, it.thrownBy, o, it.vx / sp, it.vz / sp, 3, 15, it.x, it.y, it.z, 'sticky');
           it.stuckTo = o.id;
           it.vx = it.vy = it.vz = 0;
@@ -1064,7 +1175,7 @@ function tryGrab(room, p) {
   const fx = Math.sin(p.face), fz = Math.cos(p.face);
   let best = null, bestD = Infinity;
   for (const o of room.players.values()) {
-    if (o === p || !isActive(o) || o.falling || o.heldBy || o.holding === p.id) continue;
+    if (o === p || !isActive(o) || o.falling || o.heldBy || o.holding === p.id || o.invT > 0) continue;
     const dx = o.x - p.x, dz = o.z - p.z;
     const dist = Math.hypot(dx, dz);
     if (dist > GRAB_RANGE || Math.abs(o.y - p.y) > 1.5) continue;
@@ -1172,7 +1283,7 @@ function botThink(room, bot, dt) {
 
   let target = null, best = Infinity;
   for (const o of room.players.values()) {
-    if (o === bot || !isActive(o) || o.falling || o.heldBy === bot.id || sameTeam(bot, o)) continue;
+    if (o === bot || !isActive(o) || o.falling || o.heldBy === bot.id || sameTeam(bot, o) || o.invT > 0) continue;
     const d = Math.hypot(o.x - bot.x, o.z - bot.z);
     if (d < best) { best = d; target = o; }
   }
@@ -1299,6 +1410,8 @@ function stepPhysics(room, dt) {
     p.thrownT = Math.max(0, p.thrownT - dt);
     p.fireQ = Math.max(0, p.fireQ - dt);
     p.mashT = Math.max(0, (p.mashT || 0) - dt);
+    p.invT = Math.max(0, p.invT - dt);
+    p.invCdT = Math.max(0, p.invCdT - dt);
     if (p.koT <= 0) p.dizzy = Math.max(0, p.dizzy - DIZZY_DECAY * dt);
 
     if (p.isBot && room.phase === 'playing') botThink(room, p, dt);
@@ -1345,7 +1458,8 @@ function stepPhysics(room, dt) {
     const rv = !p.falling && p.y < 0.4 && !p.heldBy ? riverAt(room, p.x, p.z) : null;
     p.inRiver = !!rv;
     // Movement and friction act relative to the water, so standing still means drifting.
-    const flowX = rv ? rv.tx * RIVER_FLOW : 0, flowZ = rv ? rv.tz * RIVER_FLOW : 0;
+    const flowing = rv && p.invT <= 0;
+    const flowX = flowing ? rv.tx * RIVER_FLOW : 0, flowZ = flowing ? rv.tz * RIVER_FLOW : 0;
     p.vx -= flowX; p.vz -= flowZ;
 
     if (canAct(p)) {
@@ -1441,6 +1555,7 @@ function stepPhysics(room, dt) {
     // Whatever the height, only thrown players get past the fence.
     if (!p.heldBy && !p.falling && p.thrownT <= 0) guardPush(room, p, 1.3);
     if (!p.falling) tryHang(room, p, inp.grab);
+    if (p.invT > 0 && !p.hang && (p.falling || p.y < -0.6 || Math.hypot(p.x, p.z) > room.islandR + 0.3)) rescue(room, p);
 
     if (!p.falling && !p.hang && p.y < -0.6) {
       p.falling = true;
@@ -1493,6 +1608,11 @@ function stepPhysics(room, dt) {
 
 function tickRoom(room, dt) {
   room.phaseTime += dt;
+
+  if (room.phase === 'loading') {
+    if (room.phaseTime >= LOADING_TIME) setPhase(room, 'countdown');
+    return;
+  }
 
   if (room.phase === 'countdown') {
     if (room.phaseTime >= COUNTDOWN) setPhase(room, 'playing');
@@ -1595,6 +1715,37 @@ function snapshot(room) {
   };
 }
 
+// Per-player data that only goes to that player's own socket, and only when it changes.
+function sendPrivate(room) {
+  const sec = room.secret;
+  for (const p of room.players.values()) {
+    if (p.isBot) continue;
+    const d = {};
+    if (p.invT > 0) d.inv = Math.round(p.invT * 10) / 10;
+    if (p.adm && isAdmin(p) && sec.invBtn && room.phase === 'playing') {
+      d.ib = { cd: Math.ceil(p.invCdT), left: Math.max(0, sec.invUses - p.invUsed) };
+    }
+    const key = JSON.stringify(d);
+    if (key === p.pvKey) continue;
+    p.pvKey = key;
+    io.to(p.id).emit('pv', d);
+  }
+}
+
+const clampInt = (v, lo, hi, dflt) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt;
+};
+function applySecret(room, s) {
+  if (!s || typeof s !== 'object') return;
+  const sec = room.secret;
+  if ('blessed' in s) sec.blessed = clampInt(s.blessed, 0, Math.max(sec.blessed, room.players.size), sec.blessed);
+  if ('includeMe' in s) sec.includeMe = !!s.includeMe;
+  if ('invBtn' in s) sec.invBtn = !!s.invBtn;
+  if ('invCd' in s) sec.invCd = clampInt(s.invCd, 0, 120, sec.invCd);
+  if ('invUses' in s) sec.invUses = clampInt(s.invUses, 1, 10, sec.invUses);
+}
+
 let sendAccum = 0;
 let serverClock = 0; // seconds; stamps snapshots so clients can interpolate between them
 let last = process.hrtime.bigint();
@@ -1608,7 +1759,10 @@ setInterval(() => {
   if (send) sendAccum = 0;
   for (const room of rooms.values()) {
     tickRoom(room, dt);
-    if (send) io.to(room.code).emit('state', snapshot(room));
+    if (send) {
+      io.to(room.code).emit('state', snapshot(room));
+      sendPrivate(room);
+    }
   }
 }, 1000 / TICK_RATE);
 
@@ -1675,6 +1829,35 @@ io.on('connection', (socket) => {
     if (!TEAM_SIZES.includes(size)) return;
     room.teamSize = size;
     broadcastRoom(room);
+  });
+
+  // Every admin request is checked here; anything from a player not named "ghouse" is dropped silently.
+  socket.on('adm', (msg) => {
+    const p = room && room.players.get(socket.id);
+    if (!isAdmin(p) || !msg || typeof msg !== 'object') return;
+    const reply = () => socket.emit('adm', { ok: true, s: room.secret });
+    if (msg.op === 'auth') {
+      if (p.adm) return reply();
+      if (ADMIN_PIN) {
+        const ip = socket.handshake.address;
+        const f = pinFails.get(ip) || { n: 0, until: 0 };
+        if (Date.now() < f.until) return socket.emit('adm', { pin: true, locked: true });
+        const pin = typeof msg.pin === 'string' ? msg.pin.slice(0, 64) : '';
+        if (!pin) return socket.emit('adm', { pin: true });
+        if (!pinMatches(pin)) {
+          f.n += 1;
+          if (f.n >= PIN_MAX_FAILS) { f.n = 0; f.until = Date.now() + PIN_LOCK_MS; }
+          pinFails.set(ip, f);
+          return socket.emit('adm', { pin: true, bad: true, locked: f.until > Date.now() });
+        }
+        pinFails.delete(ip);
+      }
+      p.adm = true;
+      return reply();
+    }
+    if (!p.adm) return;
+    if (msg.op === 'set') { applySecret(room, msg.s); reply(); }
+    else if (msg.op === 'inv') useInvButton(room, p);
   });
 
   socket.on('addBot', () => {
