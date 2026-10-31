@@ -46,7 +46,6 @@ let myAnimal = localStorage.getItem('bb-animal');
 if (!CHARACTERS[myAnimal]) myAnimal = ANIMAL_KEYS[Math.floor(Math.random() * ANIMAL_KEYS.length)];
 
 // ---------- Renderer / scene ----------
-const isTouch = 'ontouchstart' in window;
 const lowPower = matchMedia('(pointer: coarse)').matches;
 
 // ---------- Quality tiers (visual only: gameplay is identical on every tier) ----------
@@ -1995,14 +1994,14 @@ function getName() {
 }
 const isInstalled = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches || navigator.standalone;
 function goFullscreen() {
-  if (!isTouch || document.fullscreenElement || !document.fullscreenEnabled) return;
+  if (document.fullscreenElement || !document.fullscreenEnabled) return;
   document.documentElement.requestFullscreen({ navigationUI: 'hide' })
     .then(() => screen.orientation?.lock?.('landscape'))
     .catch(() => {});
 }
 function updateScreenUi() {
-  $('fullscreenBtn').classList.toggle('hidden', !isTouch || isInstalled || !document.fullscreenEnabled || !!document.fullscreenElement);
-  $('rotateHint').classList.toggle('hidden', !isTouch || !myId || innerWidth > innerHeight);
+  $('fullscreenBtn').classList.toggle('hidden', isInstalled || !document.fullscreenEnabled || !!document.fullscreenElement);
+  $('rotateHint').classList.toggle('hidden', !myId || innerWidth > innerHeight);
 }
 $('fullscreenBtn').onclick = goFullscreen;
 document.addEventListener('fullscreenchange', updateScreenUi);
@@ -2038,16 +2037,6 @@ $('copyBtn').onclick = async () => {
   catch { $('copyBtn').textContent = link; }
   setTimeout(() => ($('copyBtn').textContent = 'Copy invite link'), 1800);
 };
-if (isTouch) {
-  document.querySelector('.controls-grid').innerHTML =
-    '<span><b>Drag</b> anywhere to move</span><span><b>JUMP</b> button</span>' +
-    '<span><b>PUNCH</b> / <b>SWING</b></span><span><b>Hold GRAB</b></span>' +
-    '<span><b>KICK</b></span><span><b>Drag THROW</b> to aim</span>' +
-    '<span class="wide">Drag from <b>THROW</b> and let go to throw, toss or fire · let go on the button to cancel</span>' +
-    '<span class="wide"><b>PICK UP</b> ✨ weapons · Mallet <b>SWING</b> spins</span>' +
-    '<span class="wide">Hits only daze! <b>Grab &amp; throw</b> buddies over the fence or into the river</span>' +
-    '<span class="wide"><b>🎥 Follow</b> cam: drag the right side to look around</span>';
-}
 $('startBtn').onclick = () => socket.emit('start');
 for (const b of document.querySelectorAll('#teamPicker button')) {
   b.onclick = () => { if (room && room.hostId === myId) socket.emit('setTeams', Number(b.dataset.size)); };
@@ -2066,7 +2055,6 @@ socket.on('joined', ({ code, id }) => {
   history.replaceState(null, '', `?room=${code.toLowerCase()}`);
   $('menu').classList.add('hidden');
   $('hud').classList.remove('hidden');
-  $('touchButtons').classList.toggle('desktop', !isTouch);
   $('viewBtn').classList.remove('hidden');
   updateScreenUi();
   if (isAdminName()) socket.emit('adm', { op: 'auth', pin: localStorage.getItem(PIN_KEY) || '' });
@@ -2423,7 +2411,6 @@ function handleEvent(e) {
 }
 
 // ---------- Input ----------
-const keys = new Set();
 let viewMode = localStorage.getItem('bb-view') === 'follow' ? 'follow' : 'arena';
 let camYaw = 0;
 let camDrag = { id: null, x: 0 };
@@ -2457,58 +2444,21 @@ setViewMode(viewMode);
   btn.addEventListener('pointerdown', (e) => {
     swallowViewClick = false;
     clearTimeout(holdTimer);
-    if (!isAdminName() || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    if (!isAdminName()) return;
     holdTimer = setTimeout(() => { holdTimer = 0; swallowViewClick = true; openSecret(); }, 1500);
   });
   for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) btn.addEventListener(ev, cancel);
   btn.addEventListener('contextmenu', (e) => e.preventDefault());
 }
-window.addEventListener('keydown', (e) => {
-  if (!myId || e.repeat || document.activeElement?.tagName === 'INPUT') return;
-  if (e.code === 'KeyV') $('viewBtn').click();
-  if (e.code === 'KeyI' && shieldEl) useShield();
-});
 let joy = { x: 0, y: 0, id: null, ox: 0, oy: 0 };
-let punchQueued = false, jumpQueued = false, kickQueued = false, fireQueued = false, mouseGrab = false, touchGrab = false;
-// Aiming: hold L (mouse aims) or drag from the THROW button; releasing throws in the aimed direction.
+let punchQueued = false, jumpQueued = false, kickQueued = false, fireQueued = false, touchGrab = false;
+// Aiming: drag from the THROW button; letting go throws in the aimed direction.
 const AIM_DEADZONE = 26;
 let touchAim = { id: null, dx: 0, dy: 0 };
-let mouse = { x: 0, y: 0, seen: false };
 let myAim = null, fireAim = null;
-
-window.addEventListener('keydown', (e) => {
-  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-  keys.add(e.code);
-  if (!e.repeat) {
-    if (e.code === 'KeyJ') punchQueued = true;
-    if (e.code === 'Space') jumpQueued = true;
-    if (e.code === 'KeyF') kickQueued = true;
-  }
-  if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
-});
-window.addEventListener('keyup', (e) => {
-  if (e.code === 'KeyL' && keys.has('KeyL')) {
-    fireAim = computeAim();
-    fireQueued = !!fireAim;
-  }
-  keys.delete(e.code);
-});
-window.addEventListener('blur', () => { keys.clear(); mouseGrab = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-// pointerdown rather than mousedown: taps emit emulated mouse events that would punch.
-canvas.addEventListener('pointerdown', (e) => {
-  if (e.pointerType !== 'mouse') return;
-  if (e.button === 0) punchQueued = true;
-  if (e.button === 2) mouseGrab = true;
-});
-window.addEventListener('pointermove', (e) => {
-  if (e.pointerType === 'mouse') mouse = { x: e.clientX, y: e.clientY, seen: true };
-});
-window.addEventListener('mouseup', (e) => { if (e.button === 2) mouseGrab = false; });
 
-const aimRay = new THREE.Raycaster();
-const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-const aimNdc = new THREE.Vector2(), aimHit = new THREE.Vector3(), camFwd = new THREE.Vector3();
+const camFwd = new THREE.Vector3();
 // A screen-space drag turned into a ground direction, whichever way the camera faces.
 function screenToGround(dx, dy) {
   camera.getWorldDirection(camFwd);
@@ -2522,17 +2472,8 @@ function computeAim() {
   const me = critters.get(myId);
   if (!me || !snap || snap.phase === 'lobby') return null;
   const facing = { x: Math.sin(me.face), z: Math.cos(me.face) };
-  if (touchAim.id !== null) {
-    return Math.hypot(touchAim.dx, touchAim.dy) < AIM_DEADZONE ? facing : screenToGround(touchAim.dx, touchAim.dy);
-  }
-  if (!keys.has('KeyL')) return null;
-  if (!mouse.seen) return facing;
-  aimNdc.set((mouse.x / innerWidth) * 2 - 1, -(mouse.y / innerHeight) * 2 + 1);
-  aimRay.setFromCamera(aimNdc, camera);
-  aimPlane.constant = -(island.position.y + 0.5);
-  if (!aimRay.ray.intersectPlane(aimPlane, aimHit)) return facing;
-  const dx = aimHit.x - me.x, dz = aimHit.z - me.z, l = Math.hypot(dx, dz);
-  return l < 0.3 ? facing : { x: dx / l, z: dz / l };
+  if (touchAim.id === null) return null;
+  return Math.hypot(touchAim.dx, touchAim.dy) < AIM_DEADZONE ? facing : screenToGround(touchAim.dx, touchAim.dy);
 }
 
 {
@@ -2591,7 +2532,7 @@ function computeAim() {
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
-if (isTouch) {
+{
   const base = $('joyBase'), knob = $('joyKnob');
   canvas.addEventListener('touchstart', (e) => {
     for (const t of e.changedTouches) {
@@ -2637,10 +2578,6 @@ function sendInput(now) {
   // Nothing is sent while disconnected: socket.io would queue it and replay stale presses on reconnect.
   if (!myId || !socket.connected) { punchQueued = jumpQueued = kickQueued = fireQueued = false; return; }
   let x = 0, z = 0;
-  if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
-  if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
-  if (keys.has('KeyW') || keys.has('ArrowUp')) z -= 1;
-  if (keys.has('KeyS') || keys.has('ArrowDown')) z += 1;
   if (joy.id !== null) { x = joy.x; z = joy.y; }
   const len = Math.hypot(x, z);
   if (len > 1) { x /= len; z /= len; }
@@ -2649,7 +2586,7 @@ function sendInput(now) {
     const cs = Math.cos(camYaw), sn = Math.sin(camYaw);
     [x, z] = [x * cs + z * sn, -x * sn + z * cs];
   }
-  const grab = keys.has('KeyK') || keys.has('ShiftLeft') || keys.has('ShiftRight') || mouseGrab || touchGrab;
+  const grab = touchGrab;
   myAim = computeAim();
   myMove.x = x; myMove.z = z;
   const a = fireQueued ? fireAim : myAim;
@@ -2784,9 +2721,7 @@ function updateCamera(dt, R) {
     return;
   } else if (followActive()) {
     const me = critters.get(myId);
-    const turn = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
-    camYaw -= turn * dt * 2.4;
-    if (moveForward > 0.3 && camDrag.id === null && !turn) camYaw = angleLerp(camYaw, me.face + Math.PI, dt * 1.5 * moveForward);
+    if (moveForward > 0.3 && camDrag.id === null) camYaw = angleLerp(camYaw, me.face + Math.PI, dt * 1.5 * moveForward);
     const dist = 7 * aspectBoost, height = 3.6 * aspectBoost;
     look = new THREE.Vector3(me.x - Math.sin(camYaw) * 2, me.y + 1.6, me.z - Math.cos(camYaw) * 2);
     pos = tmpV.set(me.x + Math.sin(camYaw) * dist, me.y + height, me.z + Math.cos(camYaw) * dist);
@@ -2881,34 +2816,32 @@ function updateActionHints(me) {
     const near = (snap.items || []).find((it) => it.y < 0.5 && Math.hypot(it.x - me.x, it.z - me.z) < 1.9);
     const info = WEAPON_INFO[me.w];
     if (me.hg) {
-      hint = isTouch ? 'Hanging on! Mash <b>JUMP</b> to climb back in' : 'Hanging on! Mash <b>Space</b> / <b>K</b> to climb back in';
+      hint = 'Hanging on! Mash <b>JUMP</b> to climb back in';
     } else if (me.h) {
       punch = 'THROW';
       toss = 'THROW';
-      hint = isTouch ? 'Drag <b>THROW</b> to aim, let go to throw them' : 'Hold <b>L</b> and aim with the mouse, release to throw';
+      hint = 'Drag <b>THROW</b> to aim, let go to throw them';
     } else if (info) {
       punch = me.w === 'blaster' ? 'SHOOT' : info.gloves ? `PUNCH 🥊${me.wu}` : 'SWING';
       toss = me.w === 'blaster' ? 'FIRE' : 'AIM';
       grab = 'TOSS';
       const label = info.gloves ? `${info.label} (${koLeftText(me.wu)})` : info.label;
-      if (!isTouch) hint = `${label}: <b>J</b> ${info.spin ? 'spin attack' : info.gloves ? 'punch' : punch.toLowerCase()} · hold <b>L</b> to aim &amp; ${me.w === 'blaster' ? 'fire' : 'toss'}`;
-      else if (info.spin) hint = '<b>SWING</b> to spin and bonk everyone around you';
+      if (info.spin) hint = '<b>SWING</b> to spin and bonk everyone around you';
       else if (info.gloves) hint = `${label}: every <b>PUNCH</b> that lands is a knockout`;
     } else if (near) {
       grab = 'PICK UP';
       const info = WEAPON_INFO[near.t];
       const label = info.gloves && near.u ? `${info.label} (${koLeftText(near.u)})` : info.label;
-      hint = isTouch ? `Tap <b>PICK UP</b> for the ${label}` : `Press <b>K</b> to pick up the ${label}`;
+      hint = `Tap <b>PICK UP</b> for the ${label}`;
     }
   }
   const key = [grab, punch, toss, kick, hint].join('|');
   if (key === hintState) return;
   hintState = key;
-  const keyHint = (k) => (isTouch ? '' : `<small>${k}</small>`);
-  $('tGrab').innerHTML = grab + keyHint('K');
-  $('tPunch').innerHTML = punch + keyHint('J');
-  $('tKick').innerHTML = kick + keyHint('F');
-  $('tThrow').querySelector('.tlabel').innerHTML = toss + keyHint('L');
+  $('tGrab').textContent = grab;
+  $('tPunch').textContent = punch;
+  $('tKick').textContent = kick;
+  $('tThrow').querySelector('.tlabel').textContent = toss;
   $('tGrab').classList.toggle('glow', grab === 'PICK UP');
   $('tPunch').classList.toggle('armed', !!me?.w && !me.h);
   $('tThrow').classList.toggle('armed', toss !== 'AIM');
@@ -3171,7 +3104,7 @@ function renderSecret() {
   body.innerHTML =
     row(`Blessed players<small>${s.blessed ? `${Math.min(s.blessed, n)} of ${n} picked at the start` : 'Off'}</small>`, stepper('blessed', s.blessed, 1))
     + row('Include me in the draw', toggle('includeMe'), s.blessed > 0)
-    + row('Invincibility button<small>🛡️ or I during play</small>', toggle('invBtn'))
+    + row('Invincibility button<small>🛡️ during play</small>', toggle('invBtn'))
     + row('Cooldown', stepper('invCd', `${s.invCd} s`, 5), s.invBtn)
     + row('Uses per round', stepper('invUses', s.invUses, 1), s.invBtn);
 }
