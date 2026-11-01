@@ -49,7 +49,9 @@ if (!CHARACTERS[myAnimal]) myAnimal = ANIMAL_KEYS[Math.floor(Math.random() * ANI
 const lowPower = matchMedia('(pointer: coarse)').matches;
 
 // ---------- Quality tiers (visual only: gameplay is identical on every tier) ----------
-const QUALITY_PREFS = ['auto', 'high', 'medium', 'low'];
+const QUALITY_PREFS = ['auto', 'high', 'medium', 'low', 'vlow'];
+const TIER_NAMES = { high: 'High', medium: 'Medium', low: 'Low', vlow: 'Very Low' };
+const TIER_DOWN = { high: 'medium', medium: 'low', low: 'vlow' };
 let qualityPref = QUALITY_PREFS.includes(localStorage.getItem('bb-quality')) ? localStorage.getItem('bb-quality') : 'auto';
 // Phones run hot on anything heavier, so they start on low until the player picks otherwise.
 if (lowPower && localStorage.getItem('bb-quality') === null) {
@@ -67,8 +69,8 @@ function watchFrameRate(rawDt, playing) {
   if (fpsAcc < 0.5) return;
   slowFor = fpsFrames / fpsAcc < 45 ? slowFor + fpsAcc : 0;
   fpsAcc = fpsFrames = 0;
-  if (slowFor >= 3 && autoTier !== 'low') {
-    autoTier = autoTier === 'high' ? 'medium' : 'low';
+  if (slowFor >= 3 && TIER_DOWN[autoTier]) {
+    autoTier = TIER_DOWN[autoTier];
     slowFor = 0;
     renderQualityPicker();
   }
@@ -76,7 +78,7 @@ function watchFrameRate(rawDt, playing) {
 function renderQualityPicker() {
   for (const b of document.querySelectorAll('#qualityPicker button')) {
     b.classList.toggle('on', b.dataset.q === qualityPref);
-    if (b.dataset.q === 'auto') b.textContent = `Auto (${autoTier[0].toUpperCase()}${autoTier.slice(1)})`;
+    if (b.dataset.q === 'auto') b.textContent = `Auto (${TIER_NAMES[autoTier]})`;
   }
 }
 for (const b of document.querySelectorAll('#qualityPicker button')) {
@@ -188,7 +190,7 @@ islandScaled.add(edgeRing);
 
 // Grass blades, flowers and pebbles (instanced so they can vanish as the island crumbles)
 const decoDummy = new THREE.Object3D();
-const GRASS_BLADES = { high: 16000, medium: 7000, low: 2500 };
+const GRASS_BLADES = { high: 16000, medium: 7000, low: 2500, vlow: 0 };
 const blades = makeGrass(GRASS_BLADES.high, ISLAND_MAX);
 island.add(blades.mesh);
 const pebbleData = [];
@@ -1374,18 +1376,19 @@ function startRagdoll(c, s) {
   c.hop = c.hopV = 0;
 }
 
-// Low tier: only my critter and the three nearest get spring chains and ragdolls.
+// Low tier: only my critter and the three nearest get spring chains and ragdolls (very low: one).
 let detailT = 0;
 function assignDetail(dt) {
   detailT -= dt;
   if (detailT > 0) return;
   detailT = 0.25;
-  if (tier() !== 'low') { for (const c of critters.values()) c.full = true; return; }
+  const t = tier();
+  if (t !== 'low' && t !== 'vlow') { for (const c of critters.values()) c.full = true; return; }
   const me = critters.get(myId);
   const rx = me ? me.x : camPos.x, rz = me ? me.z : camPos.z;
   const near = [...critters.values()].filter((c) => c !== me).sort((a, b) => Math.hypot(a.x - rx, a.z - rz) - Math.hypot(b.x - rx, b.z - rz));
   for (const c of near) c.full = false;
-  near.slice(0, 3).forEach((c) => (c.full = true));
+  near.slice(0, t === 'vlow' ? 1 : 3).forEach((c) => (c.full = true));
   if (me) me.full = true;
 }
 
@@ -2882,22 +2885,30 @@ $('weaponPicks').addEventListener('pointerdown', (e) => {
 
 // ---------- Quality tier, mood and per-critter world effects ----------
 let appliedTier = null;
+// Very low is for weak phones: 75% resolution, no sun shadows (the contact blobs stay), no grass or
+// ground clutter, fewer particles, the simplest sky and a 30 fps cap.
+const PIXEL_RATIO = { high: 2, medium: 1.5, low: 1, vlow: 0.75 };
+const PARTICLE_BUDGET = { high: 1, medium: 0.7, low: 0.4, vlow: 0.2 };
+const SKY_OCTAVES = { high: 4, medium: 4, low: 2, vlow: 1 };
 function applyTier(t) {
   appliedTier = t;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, t === 'high' ? 2 : t === 'medium' ? 1.5 : 1));
-  post.setTier(t);
+  const vlow = t === 'vlow';
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, PIXEL_RATIO[t]));
+  post.setTier(vlow ? 'low' : t);
   resize();
   blades.setCount(GRASS_BLADES[t]);
+  for (const m of [flowers, pebbles, mushCaps, mushStems]) m.visible = !vlow;
+  sun.castShadow = !vlow;
   const sm = t === 'high' ? 2048 : t === 'medium' ? 1536 : 1024;
-  if (sun.shadow.mapSize.x !== sm) {
+  if (!vlow && sun.shadow.mapSize.x !== sm) {
     sun.shadow.mapSize.setScalar(sm);
     sun.shadow.map?.dispose();
     sun.shadow.map = null;
   }
-  particles.setBudget(t === 'high' ? 1 : t === 'medium' ? 0.7 : 0.4);
+  particles.setBudget(PARTICLE_BUDGET[t]);
   setPlushQuality(t === 'high');
   setGlassQuality(t === 'high');
-  skyDome.setOctaves(t === 'low' ? 2 : 4);
+  skyDome.setOctaves(SKY_OCTAVES[t]);
 }
 
 // Sunny day, drifting to sunset once the island starts to shrink.
@@ -3225,13 +3236,14 @@ function updateInvFx(dt) {
 // ---------- Main loop ----------
 const projV = new THREE.Vector3();
 let lastFrame = performance.now();
-// Touch devices are capped at 60 fps (high-refresh phones would otherwise run at 90-120 and heat up).
-const FRAME_MS = lowPower ? 1000 / 60 : 0;
+// Touch devices are capped at 60 fps (high-refresh phones would otherwise run at 90-120 and heat up);
+// very low is capped at 30 everywhere.
+const frameMs = () => (appliedTier === 'vlow' ? 1000 / 30 : lowPower ? 1000 / 60 : 0);
 let nextFrameAt = 0, looping = true;
 function frame(now) {
   if (document.hidden) { looping = false; return; }
   if (now < nextFrameAt - 1) { requestAnimationFrame(frame); return; }
-  nextFrameAt = Math.max(nextFrameAt + FRAME_MS, now);
+  nextFrameAt = Math.max(nextFrameAt + frameMs(), now);
   const rawDt = (now - lastFrame) / 1000;
   const realDt = Math.min(0.05, rawDt);
   lastFrame = now;
