@@ -2886,7 +2886,7 @@ $('weaponPicks').addEventListener('pointerdown', (e) => {
 // ---------- Quality tier, mood and per-critter world effects ----------
 let appliedTier = null;
 // Very low is for weak phones: 75% resolution, no sun shadows (the contact blobs stay), no grass or
-// ground clutter, fewer particles, the simplest sky and a 30 fps cap.
+// ground clutter, fewer particles and the simplest sky.
 const PIXEL_RATIO = { high: 2, medium: 1.5, low: 1, vlow: 0.75 };
 const PARTICLE_BUDGET = { high: 1, medium: 0.7, low: 0.4, vlow: 0.2 };
 const SKY_OCTAVES = { high: 4, medium: 4, low: 2, vlow: 1 };
@@ -3236,9 +3236,8 @@ function updateInvFx(dt) {
 // ---------- Main loop ----------
 const projV = new THREE.Vector3();
 let lastFrame = performance.now();
-// Touch devices are capped at 60 fps (high-refresh phones would otherwise run at 90-120 and heat up);
-// very low is capped at 30 everywhere.
-const frameMs = () => (appliedTier === 'vlow' ? 1000 / 30 : lowPower ? 1000 / 60 : 0);
+// Touch devices are capped at 60 fps (high-refresh phones would otherwise run at 90-120 and heat up).
+const frameMs = () => (lowPower ? 1000 / 60 : 0);
 let nextFrameAt = 0, looping = true;
 function frame(now) {
   if (document.hidden) { looping = false; return; }

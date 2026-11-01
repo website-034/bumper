@@ -329,16 +329,14 @@ function makeRiver() {
     s += len;
   }
   const river = { pts, segs, bridges: [] };
-  // Bridges where the river passes closest to two points on either side of the centre.
-  for (const target of [-12, 0, 12]) {
-    let best = null;
-    for (const sg of segs) {
-      const mx = sg.x0 + sg.dx * sg.len * 0.5, mz = sg.z0 + sg.dz * sg.len * 0.5;
-      const u = mx * ca + mz * sa;
-      if (!best || Math.abs(u - target) < Math.abs(best.u - target)) best = { u, x: mx, z: mz, a: Math.atan2(sg.dx, sg.dz) };
-    }
-    river.bridges.push({ x: r2(best.x), z: r2(best.z), a: r2(best.a) });
+  // One bridge where the river passes closest to the centre.
+  let best = null;
+  for (const sg of segs) {
+    const mx = sg.x0 + sg.dx * sg.len * 0.5, mz = sg.z0 + sg.dz * sg.len * 0.5;
+    const u = mx * ca + mz * sa;
+    if (!best || Math.abs(u) < Math.abs(best.u)) best = { u, x: mx, z: mz, a: Math.atan2(sg.dx, sg.dz) };
   }
+  river.bridges.push({ x: r2(best.x), z: r2(best.z), a: r2(best.a) });
   return river;
 }
 
