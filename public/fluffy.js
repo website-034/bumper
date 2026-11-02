@@ -78,6 +78,10 @@ export function setPlushQuality(high) {
     else plushMeshes.delete(mesh); // its critter is gone
   }
 }
+// Called when a critter is removed, so its meshes aren't kept alive until the next tier switch.
+export function releasePlush(root) {
+  root.traverse((o) => plushMeshes.delete(o));
+}
 
 // Push every vertex out along its normal by d. Normals are averaged over vertices that share a
 // position, so UV seams and cone tips stay closed.

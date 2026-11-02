@@ -4,7 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildCritter } from './characters.js';
 import { MODEL_CHARACTERS, loadManifest, loadModel, isModelReady, buildModelCritter } from './models.js';
 import { FLUFFY, buildFluffy, setGlassQuality } from './crew.js';
-import { setPlushQuality } from './fluffy.js';
+import { setPlushQuality, releasePlush } from './fluffy.js';
 import { Ragdoll, poseRagdoll, ragdollHead } from './floppy.js';
 import { Particles, SHAPE } from './particles.js';
 import {
@@ -53,21 +53,25 @@ const QUALITY_PREFS = ['auto', 'high', 'medium', 'low', 'vlow'];
 const TIER_NAMES = { high: 'High', medium: 'Medium', low: 'Low', vlow: 'Very Low' };
 const TIER_DOWN = { high: 'medium', medium: 'low', low: 'vlow' };
 let qualityPref = QUALITY_PREFS.includes(localStorage.getItem('bb-quality')) ? localStorage.getItem('bb-quality') : 'auto';
-// Phones run hot on anything heavier, so they start on low until the player picks otherwise.
-if (lowPower && localStorage.getItem('bb-quality') === null) {
-  qualityPref = 'low';
+// Phones start Auto on Low (below), so they look the same as Low but can still step down when
+// they can't hold 60. Older builds saved a fixed 'low' for every phone; move those to Auto once.
+if (lowPower && !localStorage.getItem('bb-quality-auto')) {
+  if (localStorage.getItem('bb-quality') === 'low') qualityPref = 'auto';
   localStorage.setItem('bb-quality', qualityPref);
+  localStorage.setItem('bb-quality-auto', '1');
 }
 let autoTier = lowPower ? 'low' : 'high';
 const tier = () => (qualityPref === 'auto' ? autoTier : qualityPref);
 let fpsAcc = 0, fpsFrames = 0, slowFor = 0;
-// Auto mode steps down a tier when the frame rate stays under 45 fps for 3 seconds of play.
+// Auto mode steps down a tier when the frame rate stays under 55 fps for 3 seconds of play
+// (round-start shader warm-up is excluded by the caller).
+const AUTO_MIN_FPS = 55;
 function watchFrameRate(rawDt, playing) {
   if (qualityPref !== 'auto' || !playing || rawDt > 0.25 || document.hidden) return;
   fpsAcc += rawDt;
   fpsFrames++;
   if (fpsAcc < 0.5) return;
-  slowFor = fpsFrames / fpsAcc < 45 ? slowFor + fpsAcc : 0;
+  slowFor = fpsFrames / fpsAcc < AUTO_MIN_FPS ? slowFor + fpsAcc : 0;
   fpsAcc = fpsFrames = 0;
   if (slowFor >= 3 && TIER_DOWN[autoTier]) {
     autoTier = TIER_DOWN[autoTier];
@@ -486,23 +490,36 @@ let mistT = 0;
 
 const plankMat = new THREE.MeshStandardMaterial({ color: '#c98b5a', roughness: 0.85 });
 const railMat = new THREE.MeshStandardMaterial({ color: '#a86c43', roughness: 0.9 });
+// The bridge is rebuilt every round but its size never changes, so its shapes are shared.
+const bridgeGeos = new Map();
+function bridgeGeometry(span) {
+  if (!bridgeGeos.has(span)) {
+    bridgeGeos.set(span, {
+      plank: new THREE.BoxGeometry(span, 0.12, 0.34),
+      rail: new THREE.BoxGeometry(span, 0.1, 0.1),
+      post: new THREE.CylinderGeometry(0.07, 0.08, 0.65, 6),
+    });
+  }
+  return bridgeGeos.get(span);
+}
 function buildBridge(half) {
   const g = new THREE.Group();
   const span = (half + 0.7) * 2;
+  const geo = bridgeGeometry(span);
   for (let i = 0; i < 6; i++) {
-    const p = new THREE.Mesh(new THREE.BoxGeometry(span, 0.12, 0.34), plankMat);
+    const p = new THREE.Mesh(geo.plank, plankMat);
     p.position.set(0, 0.06 + Math.sin((i / 5) * Math.PI) * 0.03, -0.95 + i * 0.38);
     p.rotation.y = (Math.random() - 0.5) * 0.04;
     p.castShadow = p.receiveShadow = true;
     g.add(p);
   }
   for (const z of [-1.12, 1.12]) {
-    const rail = new THREE.Mesh(new THREE.BoxGeometry(span, 0.1, 0.1), railMat);
+    const rail = new THREE.Mesh(geo.rail, railMat);
     rail.position.set(0, 0.62, z);
     rail.castShadow = true;
     g.add(rail);
     for (const x of [-span / 2 + 0.1, 0, span / 2 - 0.1]) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.65, 6), railMat);
+      const post = new THREE.Mesh(geo.post, railMat);
       post.position.set(x, 0.32, z);
       post.castShadow = true;
       g.add(post);
@@ -1099,6 +1116,7 @@ function makeCritterEntry(id, animal) {
 // Free the GPU memory of a critter that has left the scene. Critters share cached materials and
 // textures, so anything still used by something in the scene (or tagged shared) is kept.
 function disposeDetached(root) {
+  releasePlush(root);
   const geos = new Set(), mats = new Set(), texs = new Set();
   const collect = (o, g, m, t) => {
     if (o.geometry) g.add(o.geometry);
@@ -1903,21 +1921,72 @@ function comicWord(x, y, z, big, custom) {
   addEffect(sp, { vel: new THREE.Vector3(0, 1.5, 0), life: 0.75, max: 0.75, word: big ? 3.2 : 2.2, gravity: 0 });
 }
 
+// Confetti is one instanced mesh (a single draw call however many winners there are), with a
+// per-piece alpha so each piece still fades out on its own.
+const CONFETTI_PER_BURST = 120, CONFETTI_MAX = CONFETTI_PER_BURST * 4;
+const CONFETTI_COLORS = ['#ff9aa2', '#a0e7e5', '#b5ead7', '#fff3a0', '#c7b8ff', '#ffb7e0'].map((c) => new THREE.Color(c));
+const confettiAlpha = new THREE.InstancedBufferAttribute(new Float32Array(CONFETTI_MAX), 1);
 const confettiGeo = new THREE.PlaneGeometry(0.18, 0.1);
+confettiGeo.setAttribute('aAlpha', confettiAlpha);
+const confettiMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true });
+confettiMat.onBeforeCompile = (shader) => {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', 'attribute float aAlpha;\nvarying float vAlpha;\n#include <common>')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvAlpha = aAlpha;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', 'varying float vAlpha;\n#include <common>')
+    .replace('#include <alphamap_fragment>', '#include <alphamap_fragment>\ndiffuseColor.a *= vAlpha;');
+};
+const confettiMesh = new THREE.InstancedMesh(confettiGeo, confettiMat, CONFETTI_MAX);
+confettiMesh.frustumCulled = false;
+confettiMesh.count = 0;
+confettiMesh.setColorAt(0, CONFETTI_COLORS[0]);
+scene.add(confettiMesh);
+const confettiBits = [];
+
 function confetti(x, y, z) {
-  const colors = ['#ff9aa2', '#a0e7e5', '#b5ead7', '#fff3a0', '#c7b8ff', '#ffb7e0'];
-  for (let i = 0; i < 120; i++) {
-    const m = new THREE.Mesh(confettiGeo, new THREE.MeshBasicMaterial({ color: colors[i % colors.length], side: THREE.DoubleSide, transparent: true }));
-    m.position.set(x, y + 2, z);
+  for (let i = 0; i < CONFETTI_PER_BURST; i++) {
+    if (confettiBits.length >= CONFETTI_MAX) confettiBits.shift();
     const a = Math.random() * Math.PI * 2, sp = 2 + Math.random() * 5;
-    addEffect(m, {
+    confettiBits.push({
+      pos: new THREE.Vector3(x, y + 2, z),
       vel: new THREE.Vector3(Math.cos(a) * sp, 6 + Math.random() * 6, Math.sin(a) * sp),
-      life: 2.5 + Math.random(), max: 3.5, gravity: 9, spin: new THREE.Vector3(Math.random() * 8, Math.random() * 8, 0), drag: 1.5,
+      rx: 0, ry: 0, sx: Math.random() * 8, sy: Math.random() * 8,
+      life: 2.5 + Math.random(), color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
     });
   }
 }
 
+function updateConfetti(dt) {
+  if (!confettiBits.length && !confettiMesh.count) return;
+  const drag = Math.exp(-1.5 * dt);
+  let n = 0;
+  for (const b of confettiBits) {
+    b.life -= dt;
+    if (b.life <= 0) continue;
+    b.vel.multiplyScalar(drag);
+    b.vel.y -= 9 * dt;
+    b.pos.addScaledVector(b.vel, dt);
+    b.rx += b.sx * dt;
+    b.ry += b.sy * dt;
+    decoDummy.position.copy(b.pos);
+    decoDummy.rotation.set(b.rx, b.ry, 0);
+    decoDummy.scale.setScalar(1);
+    decoDummy.updateMatrix();
+    confettiMesh.setMatrixAt(n, decoDummy.matrix);
+    confettiMesh.setColorAt(n, b.color);
+    confettiAlpha.array[n] = Math.min(1, b.life);
+    confettiBits[n++] = b;
+  }
+  confettiBits.length = n;
+  confettiMesh.count = n;
+  confettiMesh.instanceMatrix.needsUpdate = true;
+  confettiMesh.instanceColor.needsUpdate = true;
+  confettiAlpha.needsUpdate = true;
+}
+
 function updateEffects(dt) {
+  updateConfetti(dt);
   for (let i = effects.length - 1; i >= 0; i--) {
     const e = effects[i];
     e.life -= dt;
@@ -3298,7 +3367,7 @@ function frame(now) {
 
   const playing = room && room.phase !== 'lobby' && snap && snap.phase !== 'lobby';
   updateNetWarn(now, playing);
-  watchFrameRate(rawDt, playing);
+  watchFrameRate(rawDt, playing && snap.phase === 'playing' && snap.phaseTime > 2);
   assignDetail(dt);
   const R = playing ? snap.islandR : ISLAND_MAX;
   islandScaled.scale.set(R, 1, R);
