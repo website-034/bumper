@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const path = require('path');
 const http = require('http');
 const express = require('express');
+const compression = require('compression');
 const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
@@ -19,11 +20,17 @@ function lanUrls() {
 }
 
 const app = express();
+app.use(compression());
 app.get('/lan', (req, res) => res.json({ urls: lanUrls() }));
+// Game code changes every deploy, so it is always revalidated; the heavy assets rarely change.
+const ASSET_CACHE = { maxAge: '1d' };
+for (const dir of ['models', 'media', 'icons']) app.use(`/${dir}`, express.static(path.join(__dirname, 'public', dir), ASSET_CACHE));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/vendor/three', express.static(path.join(__dirname, 'node_modules/three/build')));
-app.use('/vendor/three-addons', express.static(path.join(__dirname, 'node_modules/three/examples/jsm')));
+app.use('/vendor/three', express.static(path.join(__dirname, 'node_modules/three/build'), ASSET_CACHE));
+app.use('/vendor/three-addons', express.static(path.join(__dirname, 'node_modules/three/examples/jsm'), ASSET_CACHE));
 const server = http.createServer(app);
+// A failed listen (port in use) would otherwise be swallowed below and leave a server that serves nothing.
+server.on('error', (err) => { console.error(err); process.exit(1); });
 // A player whose connection drops briefly keeps their critter, id and place in the round.
 const AWAY_GRACE_MS = 30000;
 const AWAY_GRACE_LOBBY_MS = 8000;
@@ -175,14 +182,21 @@ function createRoom() {
 
 const MANIFEST_PATH = path.join(__dirname, 'public/models/characters.json');
 
-// Re-read on demand so new .glb characters work without restarting the server.
+// Re-read every few seconds so new .glb characters work without restarting the server,
+// without a synchronous disk read on every pick.
+const MANIFEST_TTL_MS = 3000;
+const manifest = { at: 0, ids: [] };
 function modelIds() {
+  const now = Date.now();
+  if (now - manifest.at < MANIFEST_TTL_MS) return manifest.ids;
+  manifest.at = now;
   try {
     const { characters = [] } = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
-    return characters.map((c) => c.id).filter(Boolean);
+    manifest.ids = characters.map((c) => c.id).filter(Boolean);
   } catch {
-    return [];
+    manifest.ids = [];
   }
+  return manifest.ids;
 }
 
 function allCharacters() {
@@ -1030,7 +1044,8 @@ function tryGrab(room, p) {
   const fx = Math.sin(p.face), fz = Math.cos(p.face);
   let best = null, bestD = Infinity;
   for (const o of room.players.values()) {
-    if (o === p || !isActive(o) || o.falling || o.heldBy || o.holding === p.id || o.invT > 0) continue;
+    // Players hanging on the fence can only be knocked off it: a grab would snap them back onto the rail on release.
+    if (o === p || !isActive(o) || o.falling || o.hang || o.heldBy || o.holding === p.id || o.invT > 0) continue;
     const dx = o.x - p.x, dz = o.z - p.z;
     const dist = Math.hypot(dx, dz);
     if (dist > GRAB_RANGE || Math.abs(o.y - p.y) > 1.5) continue;
@@ -1742,7 +1757,9 @@ io.on('connection', (socket) => {
     if (msg.op === 'auth') {
       if (p.adm) return reply();
       if (ADMIN_PIN) {
-        const ip = socket.handshake.address;
+        // Behind Render every socket shares the proxy's address; Cloudflare's header is the real client
+        // (and can't be forged there, unlike X-Forwarded-For).
+        const ip = (process.env.RENDER && socket.handshake.headers['cf-connecting-ip']) || socket.handshake.address;
         const f = pinFails.get(ip) || { n: 0, until: 0 };
         if (Date.now() < f.until) return socket.emit('adm', { pin: true, locked: true });
         const pin = typeof msg.pin === 'string' ? msg.pin.slice(0, 64) : '';

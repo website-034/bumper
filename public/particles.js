@@ -77,6 +77,7 @@ class Pool {
   constructor(cap, additive) {
     this.cap = cap;
     this.n = 0;
+    this.evict = 0;
     this.pos = new Float32Array(cap * 3);
     this.col = new Float32Array(cap * 3);
     this.size = new Float32Array(cap);
@@ -111,8 +112,10 @@ class Pool {
     this.points.renderOrder = additive ? 6 : 5;
   }
   emit(o) {
-    if (this.p.length >= this.cap) this.p.shift();
-    this.p.push(o);
+    if (this.p.length < this.cap) { this.p.push(o); return; }
+    // Full: overwrite in rotation (roughly the oldest) instead of an O(n) shift per spawn.
+    this.p[this.evict] = o;
+    this.evict = (this.evict + 1) % this.cap;
   }
   update(dt) {
     let w = 0;

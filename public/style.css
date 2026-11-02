@@ -157,9 +157,13 @@ input:focus { border-color: #c7b8ff; }
 .tag { margin-left: auto; font-size: 12px; opacity: 0.6; }
 
 #labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+/* Positioned every frame from game.js with a transform (no layout), anchored bottom-centre. */
 .label {
   position: absolute;
+  left: 0;
+  top: 0;
   transform: translate(-50%, -100%);
+  will-change: transform;
   font-weight: 700;
   font-size: 14px;
   color: #5a4a6b;
@@ -399,9 +403,12 @@ input:focus { border-color: #c7b8ff; }
 @keyframes timerPulse { 50% { background: #ff5f7e; } }
 .climb-bar {
   position: absolute;
+  left: 0;
+  top: 0;
   width: 64px;
   height: 9px;
   transform: translate(-50%, 0);
+  will-change: transform;
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.75);
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);

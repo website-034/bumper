@@ -532,10 +532,13 @@ function riverDist(rv, x, z) {
   return best;
 }
 
-let riverCache = null, riverKey = '', riverMesh = null, bridgeMeshes = [], sprayT = 0;
+let riverCache = null, riverKey = '', riverSrc = null, riverMesh = null, bridgeMeshes = [], sprayT = 0;
 function currentRiver() {
   const r = room && room.phase !== 'lobby' && room.river;
   if (!r) return null;
+  // Called several times a frame; the river only changes when a new 'room' message arrives.
+  if (r === riverSrc) return riverCache;
+  riverSrc = r;
   const key = r.pts.join(';');
   if (key !== riverKey) {
     riverKey = key;
@@ -1093,8 +1096,29 @@ function makeCritterEntry(id, animal) {
   });
 }
 
+// Free the GPU memory of a critter that has left the scene. Critters share cached materials and
+// textures, so anything still used by something in the scene (or tagged shared) is kept.
+function disposeDetached(root) {
+  const geos = new Set(), mats = new Set(), texs = new Set();
+  const collect = (o, g, m, t) => {
+    if (o.geometry) g.add(o.geometry);
+    for (const mat of [].concat(o.material || [])) {
+      m.add(mat);
+      for (const v of Object.values(mat)) if (v?.isTexture) t.add(v);
+    }
+  };
+  root.traverse((o) => collect(o, geos, mats, texs));
+  const usedG = new Set(), usedM = new Set(), usedT = new Set();
+  scene.traverse((o) => collect(o, usedG, usedM, usedT));
+  const free = (set, used) => { for (const r of set) if (!used.has(r) && !r.userData?.shared) r.dispose(); };
+  free(geos, usedG);
+  free(mats, usedM);
+  free(texs, usedT);
+}
+
 function removeCritter(c) {
   scene.remove(c.root);
+  disposeDetached(c.root);
   if (c.label) c.label.remove();
   if (c.bar) c.bar.remove();
 }
@@ -1103,6 +1127,7 @@ function rebuildCritter(c) {
   const fresh = makeCritterEntry(c.id, c.animal);
   for (const k of ['x', 'y', 'z', 'face', 'tx', 'ty', 'tz', 'tvx', 'tvy', 'tvz', 'tface', 's', 'label', 'bar']) fresh[k] = c[k];
   scene.remove(c.root);
+  disposeDetached(c.root);
   return fresh;
 }
 
@@ -1813,7 +1838,7 @@ function animateModel(c, dt, { s, speed, held, holding, ko, falling, airborne, o
 // Menu preview critter
 let preview = null;
 function setPreview(animal) {
-  if (preview) scene.remove(preview.root);
+  if (preview) { scene.remove(preview.root); disposeDetached(preview.root); }
   preview = makeCritterEntry('preview', animal);
   preview.face = 0.4;
   preview.sq = -0.35;
@@ -1878,11 +1903,11 @@ function comicWord(x, y, z, big, custom) {
   addEffect(sp, { vel: new THREE.Vector3(0, 1.5, 0), life: 0.75, max: 0.75, word: big ? 3.2 : 2.2, gravity: 0 });
 }
 
+const confettiGeo = new THREE.PlaneGeometry(0.18, 0.1);
 function confetti(x, y, z) {
   const colors = ['#ff9aa2', '#a0e7e5', '#b5ead7', '#fff3a0', '#c7b8ff', '#ffb7e0'];
-  const geo = new THREE.PlaneGeometry(0.18, 0.1);
   for (let i = 0; i < 120; i++) {
-    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: colors[i % colors.length], side: THREE.DoubleSide, transparent: true }));
+    const m = new THREE.Mesh(confettiGeo, new THREE.MeshBasicMaterial({ color: colors[i % colors.length], side: THREE.DoubleSide, transparent: true }));
     m.position.set(x, y + 2, z);
     const a = Math.random() * Math.PI * 2, sp = 2 + Math.random() * 5;
     addEffect(m, {
@@ -2166,6 +2191,7 @@ function teamOf(p) {
 }
 
 const teamRingGeo = new THREE.RingGeometry(0.85, 1.05, 36);
+teamRingGeo.userData.shared = true;
 function updateTeamMarker(c, p) {
   const t = teamOf(p);
   if (!c.teamRing || c.teamRing.parent !== c.root) {
@@ -2202,14 +2228,14 @@ function onPhase(phase) {
     if (room.winnerTeam >= 0) {
       const team = room.players.filter((p) => p.team === room.winnerTeam);
       const mine = team.some((p) => p.id === myId);
-      setBanner(mine ? 'Your team wins! 🎉' : `${TEAM_NAMES[room.winnerTeam]} Team wins!`, team.map((p) => p.name).join(' · '));
+      setBanner(mine ? 'Your team wins! 🎉' : `${TEAM_NAMES[room.winnerTeam]} Team wins!`, team.map((p) => escapeHtml(p.name)).join(' · '));
       sfx.win();
       for (const p of team) {
         const c = critters.get(p.id);
         if (c) confetti(c.x, c.y, c.z);
       }
     } else if (w) {
-      setBanner(w.id === myId ? 'You win! 🎉' : `${w.name} wins!`, 'Back to lobby soon…');
+      setBanner(w.id === myId ? 'You win! 🎉' : `${escapeHtml(w.name)} wins!`, 'Back to lobby soon…');
       sfx.win();
       const c = critters.get(w.id);
       if (c) confetti(c.x, c.y, c.z);
@@ -2219,6 +2245,10 @@ function onPhase(phase) {
   }
 }
 
+const HTML_ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (ch) => HTML_ESC[ch]);
+
+// text and sub are HTML: anything player-supplied must go through escapeHtml first.
 let bannerText = '';
 function setBanner(text, sub = '') {
   const html = text ? `${text}${sub ? `<small>${sub}</small>` : ''}` : '';
@@ -3328,13 +3358,11 @@ function frame(now) {
       c.bar.style.display = hang ? '' : 'none';
       if (show) {
         projV.set(c.x, c.y + (c.height || 2.3) + 0.6 + (c.ko > 0.5 ? -1.2 : 0), c.z).project(camera);
-        const sx = (projV.x * 0.5 + 0.5) * window.innerWidth, sy = (-projV.y * 0.5 + 0.5) * window.innerHeight;
-        c.label.style.left = `${sx}px`;
-        c.label.style.top = `${sy}px`;
+        const sx = Math.round((projV.x * 0.5 + 0.5) * window.innerWidth), sy = Math.round((-projV.y * 0.5 + 0.5) * window.innerHeight);
+        c.label.style.transform = `translate3d(${sx}px, ${sy}px, 0) translate(-50%, -100%)`;
         if (hang) {
           // Climb progress under the name while hanging on the fence.
-          c.bar.style.left = `${sx}px`;
-          c.bar.style.top = `${sy + 6}px`;
+          c.bar.style.transform = `translate3d(${sx}px, ${sy + 6}px, 0) translate(-50%, 0)`;
           c.bar.firstChild.style.width = `${Math.round(hang * 100)}%`;
         }
       }

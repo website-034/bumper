@@ -106,9 +106,28 @@ const gloveMaterials = () => (gloveMats ||= {
   white: mat('#fff7ee', { roughness: 0.6 }),
 });
 
+// Weapons are built once per type and cloned: clones share geometry and materials, so a spawn
+// costs no GPU uploads and nothing leaks when it's removed. Shared resources are tagged so
+// critter clean-up leaves them alone.
+const protos = new Map();
+function markShared(root) {
+  root.traverse((o) => {
+    if (o.geometry) o.geometry.userData.shared = true;
+    if (o.material) o.material.userData.shared = true;
+  });
+  return root;
+}
+function cloneOf(key, build) {
+  if (!protos.has(key)) protos.set(key, markShared(build()));
+  return protos.get(key).clone();
+}
+
 // One chunky cartoon glove centred on the paw: knuckles face +z, the cuff trails back toward
 // the wrist and the thumb sits on the inner side (side -1 = left paw).
 export function buildGlove(side = 1) {
+  return cloneOf(`glove${side < 0 ? -1 : 1}`, () => makeGlove(side));
+}
+function makeGlove(side) {
   const { red, white } = gloveMaterials();
   const g = new THREE.Group();
   const mitt = mesh(new THREE.SphereGeometry(0.24, 20, 16), red);
@@ -154,13 +173,18 @@ function buildGloves() {
 const BUILDERS = { pan: buildPan, hammer: buildHammer, blaster: buildBlaster, gloves: buildGloves };
 
 export function buildWeapon(type) {
-  const w = (BUILDERS[type] || buildPan)();
-  mergeRigidParts(w);
-  return w;
+  const key = BUILDERS[type] ? type : 'pan';
+  return cloneOf(key, () => {
+    const w = BUILDERS[key]();
+    mergeRigidParts(w);
+    return w;
+  });
 }
 
 const ringGeo = new THREE.RingGeometry(0.85, 1.0, 40);
 const glowGeo = new THREE.CircleGeometry(0.85, 40);
+const ringMat = new THREE.MeshBasicMaterial({ color: '#fff3a0', transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+const glowMat = new THREE.MeshBasicMaterial({ color: '#fffbe0', transparent: true, opacity: 0.35, depthWrite: false });
 
 // A weapon lying on the island with a glowing "pick me up" ring.
 export function buildPickup(type) {
@@ -175,11 +199,11 @@ export function buildPickup(type) {
   holder.add(w);
   holder.position.y = type === 'blaster' ? 0.1 : info.gloves ? 0.22 : 0.28;
   const s = Math.max(1, info.len / 1.7);
-  const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: '#fff3a0', transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
+  const ring = new THREE.Mesh(ringGeo, ringMat);
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.03;
   ring.scale.setScalar(s);
-  const glow = new THREE.Mesh(glowGeo, new THREE.MeshBasicMaterial({ color: '#fffbe0', transparent: true, opacity: 0.35, depthWrite: false }));
+  const glow = new THREE.Mesh(glowGeo, glowMat);
   glow.rotation.x = -Math.PI / 2;
   glow.position.y = 0.02;
   glow.scale.setScalar(s);
