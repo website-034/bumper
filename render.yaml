@@ -1,8 +1,13 @@
 services:
   - type: web
-    name: bumper-buddies
+    # Render can't move a service between regions, so the Singapore deploy is a new service.
+    name: bumper-buddies-sg
+    region: singapore
     runtime: node
     plan: free
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /
+    envVars:
+      - key: GHOUSE_PIN
+        sync: false
