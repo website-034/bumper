@@ -2245,7 +2245,7 @@ function renderLobby() {
   $('targetVal').textContent = room.target;
   const notes = [];
   if (room.teamSize) notes.push(`Teams of ${room.teamSize} are shuffled at the start. Friendly fire is ON!`);
-  if (target) notes.push(`First ${room.teamSize ? 'team' : 'player'} to ${room.target} round wins takes the match.`);
+  if (target) notes.push(`Everyone respawns. First player to push ${room.target} buddies off wins${room.teamSize ? ' for their team' : ''}.`);
   $('modeNote').classList.toggle('hidden', !notes.length);
   $('modeNote').textContent = notes.join(' ');
   $('hostControls').classList.toggle('hidden', !isHost);
@@ -2271,7 +2271,7 @@ function renderScoreboard() {
   if (!room) return;
   const states = new Map((snap?.players || []).map((p) => [p.id, p.st === 'out' || p.fl]));
   const match = room.matchOn;
-  const key = room.phase + '|' + myId + '|' + (match ? `${room.target}:${room.teamScores.join('.')}` : '') + '|' + room.players.map((p) => `${p.id}:${p.name}:${p.animal}:${p.score}:${teamOf(p)}:${states.get(p.id) ? 1 : 0}`).join(',');
+  const key = room.phase + '|' + myId + '|' + (match ? room.target : '') + '|' + room.players.map((p) => `${p.id}:${p.name}:${p.animal}:${p.score}:${teamOf(p)}:${states.get(p.id) ? 1 : 0}`).join(',');
   if (key === scoreboardKey) return;
   scoreboardKey = key;
   const sb = $('scoreboard');
@@ -2280,7 +2280,7 @@ function renderScoreboard() {
   if (match) {
     const head = document.createElement('li');
     head.className = 'match-head';
-    head.textContent = `🏆 First to ${room.target}`;
+    head.textContent = `🏆 First to ${room.target} KOs`;
     sb.append(head);
   }
   let lastTeam = null;
@@ -2290,7 +2290,7 @@ function renderScoreboard() {
       const head = document.createElement('li');
       head.className = 'team-head';
       head.style.setProperty('--team', TEAM_COLORS[p.team] || '#aaa');
-      head.textContent = `${TEAM_NAMES[p.team] || 'Solo'} Team` + (match ? ` · ${room.teamScores[p.team] || 0}` : '');
+      head.textContent = `${TEAM_NAMES[p.team] || 'Solo'} Team`;
       sb.append(head);
     }
     const li = playerItem(p, 'score:' + p.score);
@@ -2340,33 +2340,25 @@ function onPhase(phase) {
   }
   if (phase === 'roundover') {
     const w = room.players.find((p) => p.id === room.winnerId);
-    const won = room.matchWinnerTeam >= 0 || !!room.matchWinnerId;
-    const going = room.matchOn && !won;
-    const what = won ? 'the match! 🏆' : room.matchOn ? 'the round!' : '';
+    const kos = room.matchOn && w ? `${w.id === myId ? 'You' : escapeHtml(w.name)} pushed ${w.score} buddies off` : '';
     if (room.winnerTeam >= 0) {
       const team = room.players.filter((p) => p.team === room.winnerTeam);
       const mine = team.some((p) => p.id === myId);
-      const sides = [...new Set(room.players.map((p) => p.team).filter((t) => t >= 0))].sort();
-      const tally = sides.map((t) => `${TEAM_NAMES[t]} ${room.teamScores[t] || 0}`).join(' · ');
-      setBanner(
-        (mine ? 'Your team wins' : `${TEAM_NAMES[room.winnerTeam]} Team wins`) + (what ? ` ${what}` : '! 🎉'),
-        going ? `${tally} · next round soon…` : team.map((p) => escapeHtml(p.name)).join(' · '),
-      );
+      setBanner(mine ? 'Your team wins! 🎉' : `${TEAM_NAMES[room.winnerTeam]} Team wins!`, kos || team.map((p) => escapeHtml(p.name)).join(' · '));
       sfx.win();
       for (const p of team) {
         const c = critters.get(p.id);
         if (c) confetti(c.x, c.y, c.z);
       }
     } else if (w) {
-      setBanner(
-        (w.id === myId ? 'You win' : `${escapeHtml(w.name)} wins`) + (what ? ` ${what}` : '! 🎉'),
-        going ? `${w.score} / ${room.target} · next round soon…` : 'Back to lobby soon…',
-      );
+      setBanner(w.id === myId ? 'You win! 🎉' : `${escapeHtml(w.name)} wins!`, kos || 'Back to lobby soon…');
       sfx.win();
       const c = critters.get(w.id);
       if (c) confetti(c.x, c.y, c.z);
+    } else if (room.matchOn) {
+      setBanner('Match over', 'Not enough players left');
     } else {
-      setBanner('Everyone fell!', going ? 'No point this round · next round soon…' : 'Nobody survived');
+      setBanner('Everyone fell!', 'Nobody survived');
     }
   }
 }
@@ -2420,9 +2412,10 @@ socket.on('state', (s) => {
   } else if (s.phase === 'playing') {
     if (lastCount !== 0) { lastCount = 0; sfx.beep(true); }
     const me = s.players.find((p) => p.id === myId);
-    if (me && me.lt) setBanner('Round in progress', 'Spectating… you join next round');
+    const race = room?.matchOn;
+    if (me && me.lt) setBanner(race ? 'Joining the fight…' : 'Round in progress', race ? '' : 'Spectating… you join next round');
     else if (s.phaseTime < 1) setBanner('BRAWL!');
-    else if (me && (me.st === 'out' || me.fl)) setBanner('You fell off!', 'Spectating…');
+    else if (me && (me.st === 'out' || me.fl)) setBanner('You fell off!', race ? 'Back in a moment…' : 'Spectating…');
     else if (s.shrinkIn <= 0 && s.shrinkIn > -2.5) setBanner('The island is shrinking!', 'The fence moves in with it');
     else setBanner('');
   } else {
@@ -2462,7 +2455,7 @@ function updateNetWarn(now, playing) {
 
 // True when this fall leaves a single player (or team) standing: time for the slow-mo finish.
 function lastStanding(id) {
-  if (!snap || snap.phase !== 'playing' || !room) return false;
+  if (!snap || snap.phase !== 'playing' || !room || room.matchOn) return false;
   const sideOf = (pid) => {
     const p = room.players.find((q) => q.id === pid);
     const t = p ? teamOf(p) : -1;
@@ -2561,6 +2554,9 @@ function handleEvent(e) {
   } else if (e.t === 'fall') {
     if (c && lastStanding(e.id)) { slowMo = SLOW_MO; slowTarget = c; }
     sfx.fall();
+  } else if (e.t === 'kof') {
+    const k = critters.get(e.a);
+    if (k) comicWord(k.x, k.y + 2.2, k.z, e.a === myId, ['+1 KO']);
   } else if (e.t === 'spin') {
     if (c) c.sq -= 0.2;
     sfx.spin();

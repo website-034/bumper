@@ -104,8 +104,11 @@ const RESTOCK_MAX = 4;
 const MAX_WEAPONS = 30;
 const TEAM_SIZES = [0, 2, 3, 4];
 const MATCH_MODES = ['classic', 'target'];
-const TARGET_MIN = 2, TARGET_MAX = 10, TARGET_DEFAULT = 3;
+const TARGET_MIN = 3, TARGET_MAX = 30, TARGET_DEFAULT = 5;
 const MATCH_OVER_TIME = 8;
+const RESPAWN_TIME = 3;
+const SPAWN_SHIELD = 2;
+const KO_CREDIT_MS = 8000;
 const FALL_OUT_Y = -14;
 const LOADING_TIME = 1;
 const COUNTDOWN = 3;
@@ -177,11 +180,11 @@ function createRoom() {
     shrinkWarned: false,
     teamSize: 0,
     winnerTeam: -1,
-    // classic: rounds just add up. target: first player/team to `target` round wins takes the match.
+    // classic: last one standing wins the round. target: everyone respawns and the first
+    // player to push `target` buddies off wins the match (their team wins with them).
     matchMode: 'classic',
     target: TARGET_DEFAULT,
     matchOn: false,
-    teamScores: [],
     matchWinnerId: null,
     matchWinnerTeam: -1,
     secret: savedSecret,
@@ -263,6 +266,9 @@ function addPlayer(room, id, name, animal, isBot = false) {
     fireQ: 0,
     fireA: 0,
     late: room.phase !== 'lobby',
+    respawnT: 0,
+    lastBy: null,
+    lastByAt: 0,
     team: -1,
     input: { x: 0, z: 0, grab: false, punch: false, jump: false, fire: false, auto: false, pick: 0, aim: false, ax: 0, az: 1 },
     botT: 0,
@@ -290,7 +296,6 @@ function roomInfo(room) {
     matchMode: room.matchMode,
     target: room.target,
     matchOn: room.matchOn,
-    teamScores: room.teamScores,
     matchWinnerId: room.matchWinnerId,
     matchWinnerTeam: room.matchWinnerTeam,
     obstacles: room.obstacles,
@@ -428,7 +433,7 @@ function assignTeams(room) {
   list.sort(() => Math.random() - 0.5).forEach((p, i) => { p.team = i % nTeams; });
 }
 
-// Mid-match: keep teams, slot newcomers into the smallest team, reshuffle only if a side emptied out.
+// Mid-match joiners: keep teams, slot newcomers into the smallest team, reshuffle only if a side emptied out.
 function keepTeams(room) {
   const list = [...room.players.values()];
   if (!room.teamSize) {
@@ -452,11 +457,10 @@ function keepTeams(room) {
 
 function startMatch(room) {
   room.matchOn = room.matchMode === 'target';
-  room.teamScores = [];
   room.matchWinnerId = null;
   room.matchWinnerTeam = -1;
   if (room.matchOn) for (const p of room.players.values()) p.score = 0;
-  startRound(room, false);
+  startRound(room);
 }
 
 // ---- Edge fence (open only where the river flows off) ----
@@ -515,7 +519,7 @@ function resetBody(p) {
   p.hang = p.hangUsed = p.aim = false;
 }
 
-function startRound(room, sameTeams) {
+function startRound(room) {
   const list = [...room.players.values()];
   room.islandR = ISLAND_START;
   room.roundTime = 0;
@@ -529,8 +533,7 @@ function startRound(room, sameTeams) {
   room.items = [];
   room.shots = [];
   room.restock = [];
-  if (sameTeams) keepTeams(room);
-  else assignTeams(room);
+  assignTeams(room);
   // Teammates start next to each other.
   list.sort((a, b) => a.team - b.team);
   list.forEach((p, i) => {
@@ -621,6 +624,41 @@ function deflect(room, attackerId, o, hx, hy, hz, w = '') {
   room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: false, a: attackerId, b: o.id, w, df: 1 });
 }
 
+// Knockout race: whoever last hit, grabbed or threw a player gets the point if they fall soon after.
+function markHit(o, byId) {
+  o.lastBy = byId;
+  o.lastByAt = Date.now();
+}
+
+function creditKo(room, p) {
+  const k = p.lastBy && Date.now() - p.lastByAt < KO_CREDIT_MS ? room.players.get(p.lastBy) : null;
+  p.lastBy = null;
+  if (!k || k === p || sameTeam(k, p)) return;
+  k.score += 1;
+  room.events.push({ t: 'kof', a: k.id, b: p.id });
+  if (k.score >= room.target && !room.matchWinnerId) {
+    room.matchWinnerId = room.winnerId = k.id;
+    room.matchWinnerTeam = room.winnerTeam = k.team;
+  }
+  broadcastRoom(room);
+}
+
+function respawn(room, p) {
+  if (room.teamSize && p.team < 0) keepTeams(room);
+  resetBody(p);
+  const a = Math.random() * Math.PI * 2;
+  const r = (0.35 + Math.random() * 0.35) * (fenceR(room) - 1.5);
+  p.x = Math.sin(a) * r;
+  p.z = Math.cos(a) * r;
+  rescue(room, p);
+  p.face = Math.atan2(-p.x, -p.z);
+  p.state = 'alive';
+  p.late = false;
+  p.lastBy = null;
+  p.invT = SPAWN_SHIELD;
+  broadcastRoom(room);
+}
+
 const isActive = (p) => p.state === 'alive';
 const canAct = (p) => isActive(p) && !p.falling && !p.hang && p.koT <= 0 && p.stunT <= 0 && !p.heldBy;
 
@@ -643,6 +681,7 @@ function release(room, holder, thrown) {
     t.grounded = false;
     t.thrownT = THROWN_TIME;
     t.hangUsed = false;
+    markHit(t, holder.id);
     room.events.push({ t: 'throw', id: holder.id, target: t.id });
   } else {
     t.vy = 2;
@@ -658,6 +697,7 @@ const weaponItem = (room, p) => (p.weapon ? room.items.find((it) => it.id === p.
 // Returns true only when this hit knocked the target out.
 function hitPlayer(room, attackerId, o, fx, fz, knockBase, dizzyAdd, hx, hy, hz, w = '') {
   if (o.invT > 0) { deflect(room, attackerId, o, hx, hy, hz, w); return false; }
+  markHit(o, attackerId);
   if (o.hang) {
     letGo(room, o, fx, fz);
     room.events.push({ t: 'hit', x: r2(hx), y: r2(hy), z: r2(hz), big: true, a: attackerId, b: o.id, w });
@@ -1105,6 +1145,7 @@ function tryGrab(room, p) {
   dropWeapon(room, best, false);
   p.holding = best.id;
   best.heldBy = p.id;
+  markHit(best, p.id);
   best.holdT = 0;
   room.events.push({ t: 'grab', id: p.id, target: best.id });
   return true;
@@ -1425,8 +1466,12 @@ function stepPhysics(room, dt) {
       dropWeapon(room, p, false);
       if (p.holding) release(room, p, false);
       room.events.push({ t: 'fall', id: p.id });
+      if (room.matchOn && room.phase === 'playing') creditKo(room, p);
     }
-    if (p.y < FALL_OUT_Y) p.state = 'out';
+    if (p.y < FALL_OUT_Y && p.state !== 'out') {
+      p.state = 'out';
+      p.respawnT = RESPAWN_TIME;
+    }
   }
 
   // Carried players ride in front of their holder.
@@ -1494,6 +1539,17 @@ function tickRoom(room, dt) {
     stepPhysics(room, dt);
     stepItems(room, dt);
 
+    if (room.matchOn) {
+      if (room.matchWinnerId) return setPhase(room, 'roundover');
+      if (room.roundPlayers > 1 && roundSize(room) < 2) return setPhase(room, 'roundover');
+      for (const p of room.players.values()) {
+        if (p.state !== 'out' || p.away) continue;
+        p.respawnT -= dt;
+        if (p.respawnT <= 0) respawn(room, p);
+      }
+      return;
+    }
+
     const all = [...room.players.values()];
     const standing = all.filter((p) => isActive(p) && !p.falling);
     const falling = all.filter((p) => isActive(p) && p.falling);
@@ -1505,8 +1561,6 @@ function tickRoom(room, dt) {
           const t = [...left][0];
           room.winnerTeam = t;
           for (const p of all) if (p.team === t) p.score += 1;
-          room.teamScores[t] = (room.teamScores[t] || 0) + 1;
-          if (room.matchOn && room.teamScores[t] >= room.target) room.matchWinnerTeam = t;
         }
         setPhase(room, 'roundover');
       }
@@ -1515,11 +1569,7 @@ function tickRoom(room, dt) {
     const needed = room.roundPlayers <= 1 ? 0 : 1;
     if (falling.length === 0 && standing.length <= needed) {
       const winner = room.roundPlayers > 1 ? standing[0] : null;
-      if (winner) {
-        winner.score += 1;
-        room.winnerId = winner.id;
-        if (room.matchOn && winner.score >= room.target) room.matchWinnerId = winner.id;
-      }
+      if (winner) { winner.score += 1; room.winnerId = winner.id; }
       setPhase(room, 'roundover');
     }
     return;
@@ -1532,14 +1582,9 @@ function tickRoom(room, dt) {
     }
     stepPhysics(room, dt);
     stepItems(room, dt);
-    const decided = room.matchWinnerId || room.matchWinnerTeam >= 0;
-    if (room.phaseTime < (decided ? MATCH_OVER_TIME : ROUND_OVER_TIME)) return;
-    if (room.matchOn && !decided && roundSize(room) >= 2) {
-      startRound(room, true);
-    } else {
-      room.matchOn = false;
-      setPhase(room, 'lobby');
-    }
+    if (room.phaseTime < (room.matchWinnerId ? MATCH_OVER_TIME : ROUND_OVER_TIME)) return;
+    room.matchOn = false;
+    setPhase(room, 'lobby');
   }
 }
 
