@@ -103,6 +103,9 @@ const RESTOCK_MIN = 2;
 const RESTOCK_MAX = 4;
 const MAX_WEAPONS = 30;
 const TEAM_SIZES = [0, 2, 3, 4];
+const MATCH_MODES = ['classic', 'target'];
+const TARGET_MIN = 2, TARGET_MAX = 10, TARGET_DEFAULT = 3;
+const MATCH_OVER_TIME = 8;
 const FALL_OUT_Y = -14;
 const LOADING_TIME = 1;
 const COUNTDOWN = 3;
@@ -174,6 +177,13 @@ function createRoom() {
     shrinkWarned: false,
     teamSize: 0,
     winnerTeam: -1,
+    // classic: rounds just add up. target: first player/team to `target` round wins takes the match.
+    matchMode: 'classic',
+    target: TARGET_DEFAULT,
+    matchOn: false,
+    teamScores: [],
+    matchWinnerId: null,
+    matchWinnerTeam: -1,
     secret: savedSecret,
   };
   rooms.set(room.code, room);
@@ -277,6 +287,12 @@ function roomInfo(room) {
     winnerId: room.winnerId,
     winnerTeam: room.winnerTeam,
     teamSize: room.teamSize,
+    matchMode: room.matchMode,
+    target: room.target,
+    matchOn: room.matchOn,
+    teamScores: room.teamScores,
+    matchWinnerId: room.matchWinnerId,
+    matchWinnerTeam: room.matchWinnerTeam,
     obstacles: room.obstacles,
     river: room.river && { pts: room.river.pts, half: RIVER_HALF, bridges: room.river.bridges },
     guardInset: GUARD_INSET,
@@ -412,6 +428,37 @@ function assignTeams(room) {
   list.sort(() => Math.random() - 0.5).forEach((p, i) => { p.team = i % nTeams; });
 }
 
+// Mid-match: keep teams, slot newcomers into the smallest team, reshuffle only if a side emptied out.
+function keepTeams(room) {
+  const list = [...room.players.values()];
+  if (!room.teamSize) {
+    for (const p of list) p.team = -1;
+    return;
+  }
+  const counts = [];
+  for (const p of list) if (p.team >= 0) counts[p.team] = (counts[p.team] || 0) + 1;
+  if (counts.filter(Boolean).length < 2) {
+    assignTeams(room);
+    return;
+  }
+  for (const p of list) {
+    if (p.team >= 0) continue;
+    let best = 0;
+    for (let t = 1; t < counts.length; t++) if ((counts[t] || 0) < (counts[best] || 0)) best = t;
+    p.team = best;
+    counts[best] = (counts[best] || 0) + 1;
+  }
+}
+
+function startMatch(room) {
+  room.matchOn = room.matchMode === 'target';
+  room.teamScores = [];
+  room.matchWinnerId = null;
+  room.matchWinnerTeam = -1;
+  if (room.matchOn) for (const p of room.players.values()) p.score = 0;
+  startRound(room, false);
+}
+
 // ---- Edge fence (open only where the river flows off) ----
 const angDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
@@ -468,7 +515,7 @@ function resetBody(p) {
   p.hang = p.hangUsed = p.aim = false;
 }
 
-function startRound(room) {
+function startRound(room, sameTeams) {
   const list = [...room.players.values()];
   room.islandR = ISLAND_START;
   room.roundTime = 0;
@@ -482,7 +529,8 @@ function startRound(room) {
   room.items = [];
   room.shots = [];
   room.restock = [];
-  assignTeams(room);
+  if (sameTeams) keepTeams(room);
+  else assignTeams(room);
   // Teammates start next to each other.
   list.sort((a, b) => a.team - b.team);
   list.forEach((p, i) => {
@@ -1457,6 +1505,8 @@ function tickRoom(room, dt) {
           const t = [...left][0];
           room.winnerTeam = t;
           for (const p of all) if (p.team === t) p.score += 1;
+          room.teamScores[t] = (room.teamScores[t] || 0) + 1;
+          if (room.matchOn && room.teamScores[t] >= room.target) room.matchWinnerTeam = t;
         }
         setPhase(room, 'roundover');
       }
@@ -1465,7 +1515,11 @@ function tickRoom(room, dt) {
     const needed = room.roundPlayers <= 1 ? 0 : 1;
     if (falling.length === 0 && standing.length <= needed) {
       const winner = room.roundPlayers > 1 ? standing[0] : null;
-      if (winner) { winner.score += 1; room.winnerId = winner.id; }
+      if (winner) {
+        winner.score += 1;
+        room.winnerId = winner.id;
+        if (room.matchOn && winner.score >= room.target) room.matchWinnerId = winner.id;
+      }
       setPhase(room, 'roundover');
     }
     return;
@@ -1478,7 +1532,14 @@ function tickRoom(room, dt) {
     }
     stepPhysics(room, dt);
     stepItems(room, dt);
-    if (room.phaseTime >= ROUND_OVER_TIME) setPhase(room, 'lobby');
+    const decided = room.matchWinnerId || room.matchWinnerTeam >= 0;
+    if (room.phaseTime < (decided ? MATCH_OVER_TIME : ROUND_OVER_TIME)) return;
+    if (room.matchOn && !decided && roundSize(room) >= 2) {
+      startRound(room, true);
+    } else {
+      room.matchOn = false;
+      setPhase(room, 'lobby');
+    }
   }
 }
 
@@ -1633,6 +1694,13 @@ function removePlayer(room, id) {
   broadcastRoom(room);
 }
 
+// The PIN-verified "ghouse" always runs the room, wherever he joins from.
+function claimHost(room, p) {
+  if (room.hostId === p.id) return;
+  room.hostId = p.id;
+  broadcastRoom(room);
+}
+
 const clearInput = (p) => Object.assign(p.input, { x: 0, z: 0, grab: false, punch: false, jump: false, fire: false, auto: false, pick: 0, aim: false });
 
 io.on('connection', (socket) => {
@@ -1647,6 +1715,7 @@ io.on('connection', (socket) => {
       clearTimeout(p.awayTimer);
       p.away = false;
       socket.join(r.code);
+      if (p.adm) claimHost(r, p);
       socket.emit('room', roomInfo(r));
     } else {
       socket.emit('rejoin');
@@ -1684,8 +1753,9 @@ io.on('connection', (socket) => {
       if (it.thrownBy === oldId) it.thrownBy = id;
     }
     for (const s of r.shots) if (s.owner === oldId) s.owner = id;
-    if (r.hostId === oldId) r.hostId = id;
+    if (r.hostId === oldId || p.adm) r.hostId = id;
     if (r.winnerId === oldId) r.winnerId = id;
+    if (r.matchWinnerId === oldId) r.matchWinnerId = id;
     room = r;
     socket.join(r.code);
     io.sockets.sockets.get(oldId)?.disconnect(true);
@@ -1739,7 +1809,14 @@ io.on('connection', (socket) => {
 
   socket.on('start', () => {
     if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
-    startRound(room);
+    startMatch(room);
+  });
+
+  socket.on('setMatch', ({ mode, target } = {}) => {
+    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    if (MATCH_MODES.includes(mode)) room.matchMode = mode;
+    if (Number.isInteger(target)) room.target = Math.max(TARGET_MIN, Math.min(TARGET_MAX, target));
+    broadcastRoom(room);
   });
 
   socket.on('setTeams', (size) => {
@@ -1773,6 +1850,7 @@ io.on('connection', (socket) => {
         pinFails.delete(ip);
       }
       p.adm = true;
+      claimHost(room, p);
       return reply();
     }
     if (!p.adm) return;

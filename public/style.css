@@ -186,12 +186,18 @@ input:focus { border-color: #c7b8ff; }
 .team-picker button.on { background: #b39ef0; color: #fff; box-shadow: 0 2px 0 rgba(0, 0, 0, 0.12); }
 .team-picker.locked button:not(.on) { display: none; }
 .team-picker.locked button { cursor: default; }
+#scoreboard li.match-head { font-size: 13px; padding: 2px 12px; color: #fff; background: #b39ef0; }
 #scoreboard li.team-head { font-size: 13px; padding: 2px 12px; color: #fff; background: var(--team); }
 
 #hud { position: fixed; inset: 0; pointer-events: none; }
 #scoreboard { position: absolute; top: 14px; left: 14px; list-style: none; display: flex; flex-direction: column; gap: 5px; }
 #scoreboard li { font-size: 15px; padding: 4px 12px; }
 #scoreboard li.out { opacity: 0.4; }
+@media (max-height: 430px) {
+  #scoreboard { gap: 3px; top: 10px; }
+  #scoreboard li { font-size: 13px; padding: 2px 10px; }
+  #scoreboard li.team-head, #scoreboard li.match-head { font-size: 12px; padding: 1px 10px; }
+}
 #scoreboard li .score { margin-left: auto; padding-left: 12px; color: #9b86e0; }
 
 #banner {
@@ -243,6 +249,30 @@ input:focus { border-color: #c7b8ff; }
   background: rgba(255, 255, 255, 0.8);
   box-shadow: 0 4px 12px rgba(90, 74, 107, 0.15);
 }
+#pingChip {
+  position: absolute;
+  left: calc(10px + env(safe-area-inset-left));
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px 0 6px;
+  border-radius: 10px;
+  font: 700 12px 'Fredoka', system-ui, sans-serif;
+  color: #5a4a6b;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 2px 8px rgba(90, 74, 107, 0.15);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+#pingChip svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+#pingChip circle { fill: currentColor; stroke: none; }
+#pingChip svg .dim { opacity: 0.25; }
+#pingChip.good svg { color: #3fbf6a; }
+#pingChip.ok svg { color: #e6a700; }
+#pingChip.bad svg { color: #e5484d; }
+#pingChip.off svg { color: #a99bb8; }
 #fullscreenBtn { font-size: 24px !important; line-height: 1; }
 #homeBtn { font-size: 20px; }
 #homeBtn.confirm { font-size: 15px; color: #fff; background: #f07a8f; }
@@ -472,7 +502,7 @@ input:focus { border-color: #c7b8ff; }
 #loadingScreen, #loadVideo { opacity: 0; visibility: hidden; transition: opacity 0.25s ease, visibility 0s linear 0.25s; }
 #loadingScreen.show, #loadVideo.show { opacity: 1; visibility: visible; transition: opacity 0.25s ease; }
 
-.secret-backdrop {
+.secret-backdrop, .modal {
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -480,7 +510,7 @@ input:focus { border-color: #c7b8ff; }
   place-items: center;
   background: rgba(90, 74, 107, 0.25);
 }
-.secret-card {
+.secret-card, .modal-card {
   position: relative;
   width: min(330px, 90vw);
   max-height: 90vh;
@@ -495,8 +525,15 @@ input:focus { border-color: #c7b8ff; }
   gap: 10px;
   animation: pop 0.3s cubic-bezier(.2, 1.6, .5, 1);
 }
-.secret-card h2 { font-size: 20px; text-align: center; color: #9b86e0; }
-.secret-close {
+.secret-card h2, .modal-card h2 { font-size: 20px; text-align: center; color: #9b86e0; }
+.modal-card { width: min(400px, 92vw); text-align: left; }
+.modal-card .hint { font-size: 13px; }
+.modal-label { font-weight: 700; color: #7a6a8b; font-size: 14px; margin-top: 4px; }
+.rules { font-size: 13px; line-height: 1.4; color: #5a4a6b; }
+.modal-card .controls-grid { margin-top: 0; }
+.menu-links { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.stepper.locked button { display: none; }
+.secret-close, .modal-close {
   position: absolute; top: 10px; right: 10px; width: 32px; height: 32px; border: 0; border-radius: 10px;
   font: 700 16px 'Fredoka', system-ui, sans-serif; color: #7a6a8b; background: #f4effb; cursor: pointer;
 }

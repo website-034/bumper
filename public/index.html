@@ -32,6 +32,10 @@
     <div id="animalPicker" class="animal-picker"></div>
     <button id="playBtn" class="btn primary">Play</button>
     <p id="menuError" class="error"></p>
+    <div class="menu-links">
+      <button class="btn small" data-open="settingsModal">⚙️ Settings</button>
+      <button class="btn small" data-open="rulesModal">📖 How to play</button>
+    </div>
   </div>
 
   <div id="lobby" class="panel side hidden">
@@ -43,7 +47,7 @@
     <p id="pickNote" class="hint hidden"></p>
     <ul id="playerList"></ul>
     <div class="mode-row">
-      <span class="mode-label">Mode</span>
+      <span class="mode-label">Teams</span>
       <div id="teamPicker" class="team-picker">
         <button data-size="0">Free-for-all</button>
         <button data-size="2">Teams of 2</button>
@@ -51,17 +55,19 @@
         <button data-size="4">Teams of 4</button>
       </div>
     </div>
-    <p id="teamNote" class="hint hidden">Friendly fire is ON, so watch your swings! Last team standing wins.</p>
     <div class="mode-row">
-      <span class="mode-label">Quality</span>
-      <div id="qualityPicker" class="team-picker">
-        <button data-q="auto">Auto</button>
-        <button data-q="high">High</button>
-        <button data-q="medium">Medium</button>
-        <button data-q="low">Low</button>
-        <button data-q="vlow">Very Low</button>
+      <span class="mode-label">Match</span>
+      <div id="matchPicker" class="team-picker">
+        <button data-mode="classic">Classic</button>
+        <button data-mode="target">First to</button>
+      </div>
+      <div id="targetStepper" class="stepper hidden">
+        <button data-d="-1" aria-label="Lower target">−</button>
+        <b id="targetVal">3</b>
+        <button data-d="1" aria-label="Raise target">+</button>
       </div>
     </div>
+    <p id="modeNote" class="hint hidden"></p>
     <div id="hostControls" class="hidden">
       <div class="row">
         <button id="addBotBtn" class="btn small">+ Add bot</button>
@@ -70,7 +76,36 @@
       <button id="startBtn" class="btn primary">Start Round</button>
     </div>
     <p id="waitingText" class="hint hidden">Waiting for the host to start…</p>
-    <div class="controls-grid">
+    <div class="menu-links">
+      <button class="btn small" data-open="settingsModal">⚙️ Settings</button>
+      <button class="btn small" data-open="rulesModal">📖 How to play</button>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card">
+      <button class="modal-close" aria-label="Close">✕</button>
+      <h2>Settings</h2>
+      <div class="modal-label">Graphics</div>
+      <div id="qualityPicker" class="team-picker">
+        <button data-q="auto">Auto</button>
+        <button data-q="high">High</button>
+        <button data-q="medium">Medium</button>
+        <button data-q="low">Low</button>
+        <button data-q="vlow">Very Low</button>
+      </div>
+      <p class="hint">Auto drops detail on its own whenever your phone can't hold 60 FPS.</p>
+    </div>
+  </div>
+
+  <div id="rulesModal" class="modal hidden">
+    <div class="modal-card">
+      <button class="modal-close" aria-label="Close">✕</button>
+      <h2>How to play</h2>
+      <div class="modal-label">Goal</div>
+      <p class="rules">Knock everyone off the floating island. Last one standing wins the round. Hits only daze, so <b>grab &amp; throw</b> buddies over the fence or into the river. The island starts shrinking after 5 minutes.</p>
+      <div class="modal-label">Controls</div>
+      <div class="controls-grid">
       <span><b>Drag</b> anywhere to move</span>
       <span><b>JUMP</b> button</span>
       <span><b>PUNCH</b>: hit or use your weapon</span>
@@ -79,6 +114,10 @@
       <span class="wide">Tap a weapon icon (top right) to pick it up or swap · 🥊 gloves KO in one punch</span>
       <span class="wide">Hits only daze! <b>Grab &amp; throw</b> buddies over the fence or into the river</span>
       <span class="wide"><b>🎥 Follow</b> cam: drag the right side to look around</span>
+      </div>
+      <div class="modal-label">Modes</div>
+      <p class="rules"><b>Free-for-all</b>: everyone for themselves. <b>Teams</b>: last team standing wins, and friendly fire is ON.</p>
+      <p class="rules"><b>Classic</b>: play round after round, points keep adding up. <b>First to N</b>: teams stay the same and rounds keep going until a player or team reaches the target score and wins the match.</p>
     </div>
   </div>
 
@@ -88,6 +127,15 @@
     <div id="banner"></div>
     <div id="actionHint" class="hidden"></div>
     <div id="dizzyMeter"><div id="dizzyFill"></div><span>DIZZY</span></div>
+    <div id="pingChip" class="hidden" aria-label="Connection">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path class="b3" d="M2.5 9.5a14 14 0 0 1 19 0" />
+        <path class="b2" d="M5.6 12.8a9.5 9.5 0 0 1 12.8 0" />
+        <path class="b1" d="M8.7 16.1a5 5 0 0 1 6.6 0" />
+        <circle cx="12" cy="19.4" r="1.6" />
+      </svg>
+      <span id="pingText">…</span>
+    </div>
   </div>
 
   <div id="touchButtons" class="hidden">

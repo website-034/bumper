@@ -1302,13 +1302,33 @@ function collidePredicted(c) {
 }
 const myMove = { x: 0, z: 0 };let rtt = -1;
 setInterval(() => {
+  renderPing();
   if (!socket.connected) return;
   const t0 = performance.now();
   socket.volatile.emit('rtt', () => {
     const r = performance.now() - t0;
     rtt = rtt < 0 ? r : rtt + (r - rtt) * 0.25;
+    renderPing();
   });
 }, 2000);
+
+const pingChip = $('pingChip'), pingText = $('pingText');
+const pingBars = ['b1', 'b2', 'b3'].map((c) => pingChip.querySelector('.' + c));
+let pingKey = '';
+function renderPing() {
+  if (!room) return;
+  const off = !socket.connected;
+  const ms = Math.round(rtt);
+  const level = off ? 'off' : rtt < 0 ? 'ok' : ms < 80 ? 'good' : ms < 150 ? 'ok' : 'bad';
+  const text = off ? 'offline' : rtt < 0 ? '…' : `${ms} ms`;
+  const key = level + text;
+  if (key === pingKey) return;
+  pingKey = key;
+  pingChip.className = level;
+  pingText.textContent = text;
+  const lit = { good: 3, ok: 2, bad: 1, off: 0 }[level];
+  pingBars.forEach((b, i) => b.classList.toggle('dim', i >= lit));
+}
 
 const canPredict = (s) => !!s && snap?.phase === 'playing' && s.st === 'alive' && !s.fl && !s.ko && !s.sn && !s.hb && !s.hg && !s.lt;
 const recent = (t, ms) => performance.now() - (t || 0) < ms;
@@ -2145,6 +2165,16 @@ $('startBtn').onclick = () => socket.emit('start');
 for (const b of document.querySelectorAll('#teamPicker button')) {
   b.onclick = () => { if (room && room.hostId === myId) socket.emit('setTeams', Number(b.dataset.size)); };
 }
+for (const b of document.querySelectorAll('#matchPicker button')) {
+  b.onclick = () => { if (room && room.hostId === myId) socket.emit('setMatch', { mode: b.dataset.mode }); };
+}
+for (const b of document.querySelectorAll('#targetStepper button')) {
+  b.onclick = () => { if (room && room.hostId === myId) socket.emit('setMatch', { target: room.target + Number(b.dataset.d) }); };
+}
+for (const b of document.querySelectorAll('[data-open]')) b.onclick = () => $(b.dataset.open).classList.remove('hidden');
+for (const m of document.querySelectorAll('.modal')) {
+  m.onclick = (e) => { if (e.target === m || e.target.closest('.modal-close')) m.classList.add('hidden'); };
+}
 $('addBotBtn').onclick = () => socket.emit('addBot');
 $('removeBotsBtn').onclick = () => socket.emit('removeBots');
 
@@ -2174,6 +2204,7 @@ socket.on('room', (r) => {
   renderScoreboard();
   onPhase(r.phase);
   if (adm.open) renderSecret();
+  renderPing();
 });
 
 function playerItem(p, extra = '') {
@@ -2206,13 +2237,20 @@ function renderLobby() {
   const isHost = room.hostId === myId;
   for (const b of document.querySelectorAll('#teamPicker button')) b.classList.toggle('on', Number(b.dataset.size) === room.teamSize);
   $('teamPicker').classList.toggle('locked', !isHost);
-  $('teamNote').classList.toggle('hidden', !room.teamSize);
-  $('teamNote').textContent = room.teamSize
-    ? `Teams of ${room.teamSize} are shuffled when the round starts. Friendly fire is ON, so watch your swings! Last team standing wins.`
-    : '';
+  const target = room.matchMode === 'target';
+  for (const b of document.querySelectorAll('#matchPicker button')) b.classList.toggle('on', b.dataset.mode === room.matchMode);
+  $('matchPicker').classList.toggle('locked', !isHost);
+  $('targetStepper').classList.toggle('hidden', !target);
+  $('targetStepper').classList.toggle('locked', !isHost);
+  $('targetVal').textContent = room.target;
+  const notes = [];
+  if (room.teamSize) notes.push(`Teams of ${room.teamSize} are shuffled at the start. Friendly fire is ON!`);
+  if (target) notes.push(`First ${room.teamSize ? 'team' : 'player'} to ${room.target} round wins takes the match.`);
+  $('modeNote').classList.toggle('hidden', !notes.length);
+  $('modeNote').textContent = notes.join(' ');
   $('hostControls').classList.toggle('hidden', !isHost);
   $('waitingText').classList.toggle('hidden', isHost);
-  $('startBtn').textContent = room.players.length < 2 ? 'Start (practice)' : 'Start Round';
+  $('startBtn').textContent = room.players.length < 2 ? 'Start (practice)' : target ? 'Start Match' : 'Start Round';
   const me = room.players.find((p) => p.id === myId);
   if (me) {
     if (wantedAnimal && wantedAnimal !== me.animal) {
@@ -2232,12 +2270,19 @@ let scoreboardKey = '';
 function renderScoreboard() {
   if (!room) return;
   const states = new Map((snap?.players || []).map((p) => [p.id, p.st === 'out' || p.fl]));
-  const key = room.phase + '|' + myId + '|' + room.players.map((p) => `${p.id}:${p.name}:${p.animal}:${p.score}:${teamOf(p)}:${states.get(p.id) ? 1 : 0}`).join(',');
+  const match = room.matchOn;
+  const key = room.phase + '|' + myId + '|' + (match ? `${room.target}:${room.teamScores.join('.')}` : '') + '|' + room.players.map((p) => `${p.id}:${p.name}:${p.animal}:${p.score}:${teamOf(p)}:${states.get(p.id) ? 1 : 0}`).join(',');
   if (key === scoreboardKey) return;
   scoreboardKey = key;
   const sb = $('scoreboard');
   sb.innerHTML = '';
   const teams = room.players.some((p) => teamOf(p) >= 0);
+  if (match) {
+    const head = document.createElement('li');
+    head.className = 'match-head';
+    head.textContent = `🏆 First to ${room.target}`;
+    sb.append(head);
+  }
   let lastTeam = null;
   [...room.players].sort((a, b) => (teams ? a.team - b.team : 0) || b.score - a.score).forEach((p) => {
     if (teams && p.team !== lastTeam) {
@@ -2245,7 +2290,7 @@ function renderScoreboard() {
       const head = document.createElement('li');
       head.className = 'team-head';
       head.style.setProperty('--team', TEAM_COLORS[p.team] || '#aaa');
-      head.textContent = `${TEAM_NAMES[p.team] || 'Solo'} Team`;
+      head.textContent = `${TEAM_NAMES[p.team] || 'Solo'} Team` + (match ? ` · ${room.teamScores[p.team] || 0}` : '');
       sb.append(head);
     }
     const li = playerItem(p, 'score:' + p.score);
@@ -2285,6 +2330,7 @@ function onPhase(phase) {
   if (phase === 'lobby') setBanner('');
   if (phase === 'loading') {
     closeSecret();
+    for (const m of document.querySelectorAll('.modal')) m.classList.add('hidden');
     showLoading();
     // Compile the round's shaders behind the loading screen instead of hitching mid-fight.
     requestAnimationFrame(() => renderer.compileAsync?.(scene, camera).catch(() => {}));
@@ -2294,22 +2340,33 @@ function onPhase(phase) {
   }
   if (phase === 'roundover') {
     const w = room.players.find((p) => p.id === room.winnerId);
+    const won = room.matchWinnerTeam >= 0 || !!room.matchWinnerId;
+    const going = room.matchOn && !won;
+    const what = won ? 'the match! 🏆' : room.matchOn ? 'the round!' : '';
     if (room.winnerTeam >= 0) {
       const team = room.players.filter((p) => p.team === room.winnerTeam);
       const mine = team.some((p) => p.id === myId);
-      setBanner(mine ? 'Your team wins! 🎉' : `${TEAM_NAMES[room.winnerTeam]} Team wins!`, team.map((p) => escapeHtml(p.name)).join(' · '));
+      const sides = [...new Set(room.players.map((p) => p.team).filter((t) => t >= 0))].sort();
+      const tally = sides.map((t) => `${TEAM_NAMES[t]} ${room.teamScores[t] || 0}`).join(' · ');
+      setBanner(
+        (mine ? 'Your team wins' : `${TEAM_NAMES[room.winnerTeam]} Team wins`) + (what ? ` ${what}` : '! 🎉'),
+        going ? `${tally} · next round soon…` : team.map((p) => escapeHtml(p.name)).join(' · '),
+      );
       sfx.win();
       for (const p of team) {
         const c = critters.get(p.id);
         if (c) confetti(c.x, c.y, c.z);
       }
     } else if (w) {
-      setBanner(w.id === myId ? 'You win! 🎉' : `${escapeHtml(w.name)} wins!`, 'Back to lobby soon…');
+      setBanner(
+        (w.id === myId ? 'You win' : `${escapeHtml(w.name)} wins`) + (what ? ` ${what}` : '! 🎉'),
+        going ? `${w.score} / ${room.target} · next round soon…` : 'Back to lobby soon…',
+      );
       sfx.win();
       const c = critters.get(w.id);
       if (c) confetti(c.x, c.y, c.z);
     } else {
-      setBanner('Everyone fell!', 'Nobody survived');
+      setBanner('Everyone fell!', going ? 'No point this round · next round soon…' : 'Nobody survived');
     }
   }
 }
@@ -2391,7 +2448,9 @@ socket.on('connect', () => {
   snapBuf.length = 0;
   clockOffset = null;
   if (myId && !socket.recovered) rejoin();
+  renderPing();
 });
+socket.on('disconnect', renderPing);
 socket.on('rejoin', rejoin);
 let netWarnOn = false;
 function updateNetWarn(now, playing) {
